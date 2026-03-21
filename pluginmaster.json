@@ -1,0 +1,19 @@
+[
+  {
+    "Author": "Sansflaire",
+    "Name": "PanacheUI",
+    "InternalName": "PanacheUI",
+    "AssemblyVersion": "0.1.0.0",
+    "Punchline": "SkiaSharp-powered UI rendering framework. Give your plugins what Sansflaire lacks.",
+    "Description": "PanacheUI is a vector graphics UI framework for Dalamud plugins, backed by SkiaSharp (the same engine as Chrome and Flutter). Provides a node tree, CSS-like styling, layout engine, and smooth rendering — far beyond what vanilla ImGui can offer.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 14,
+    "Tags": ["ui", "framework", "rendering"],
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip",
+    "DownloadLinkUpdate": "https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip",
+    "DownloadCount": 0,
+    "LastUpdated": 1742543000
+  }
+]
