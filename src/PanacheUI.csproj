@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AssemblyName>PanacheUI</AssemblyName>
+    <RootNamespace>PanacheUI</RootNamespace>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DalamudLibPath>$(APPDATA)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
+  </PropertyGroup>
+
+  <!-- Dalamud references — Private=false, Dalamud provides these at runtime -->
+  <ItemGroup>
+    <Reference Include="Dalamud"                HintPath="$(DalamudLibPath)Dalamud.dll"                Private="false" />
+    <Reference Include="Dalamud.Common"         HintPath="$(DalamudLibPath)Dalamud.Common.dll"         Private="false" />
+    <Reference Include="Dalamud.Bindings.ImGui" HintPath="$(DalamudLibPath)Dalamud.Bindings.ImGui.dll" Private="false" />
+    <Reference Include="Newtonsoft.Json"        HintPath="$(DalamudLibPath)Newtonsoft.Json.dll"        Private="false" />
+    <Reference Include="Serilog"               HintPath="$(DalamudLibPath)Serilog.dll"               Private="false" />
+  </ItemGroup>
+
+  <!-- SkiaSharp — must match Umbra's native libSkiaSharp.dll (v118) already in the process.
+       Using 3.118.0-preview.1.2 to be compatible with the version Umbra ships. -->
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp"                    Version="3.118.0-preview.1.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.118.0-preview.1.2" />
+  </ItemGroup>
+
+  <!-- Post-build: copy DLL + manifest + native SkiaSharp to devPlugins -->
+  <Target Name="CopyToDevPlugins" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(TargetPath)"
+      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
+      OverwriteReadOnlyFiles="true"
+    />
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\..\PanacheUI.json"
+      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
+      OverwriteReadOnlyFiles="true"
+      Condition="Exists('$(MSBuildProjectDirectory)\..\PanacheUI.json')"
+    />
+    <Copy
+      SourceFiles="$(OutputPath)libSkiaSharp.dll"
+      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
+      OverwriteReadOnlyFiles="true"
+      Condition="Exists('$(OutputPath)libSkiaSharp.dll')"
+    />
+    <Copy
+      SourceFiles="$(OutputPath)SkiaSharp.dll"
+      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
+      OverwriteReadOnlyFiles="true"
+      Condition="Exists('$(OutputPath)SkiaSharp.dll')"
+    />
+  </Target>
+</Project>

@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Dalamud
+        run: |
+          Invoke-WebRequest -Uri "https://goatcorp.github.io/dalamud-distrib/stg/latest.zip" -OutFile dalamud.zip
+          $dest = "$env:APPDATA\XIVLauncher\addon\Hooks\dev"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive dalamud.zip -DestinationPath $dest -Force
+        shell: pwsh
+
+      - name: Prepare output directories
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI" | Out-Null
+        shell: pwsh
+
+      - name: Build
+        run: dotnet build src/PanacheUI.csproj --configuration Release --no-incremental
+        shell: pwsh
+
+      - name: Collect artifacts
+        run: |
+          $out = "artifacts"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\PanacheUI.dll"    $out
+          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\PanacheUI.json"   $out
+          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\SkiaSharp.dll"    $out -ErrorAction SilentlyContinue
+          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\libSkiaSharp.dll" $out -ErrorAction SilentlyContinue
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanacheUI
+          path: artifacts/
+
+      - name: Package and upload release
+        if: github.event_name == 'release'
+        run: |
+          Compress-Archive -Path artifacts/* -DestinationPath PanacheUI.zip
+          gh release upload ${{ github.ref_name }} PanacheUI.zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

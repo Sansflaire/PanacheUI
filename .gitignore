@@ -1,0 +1,12 @@
+CLAUDE.md
+bin/
+obj/
+src/bin/
+src/obj/
+*.user
+.vs/
+.vscode/
+*.suo
+*.DS_Store
+SkiaSharp.dll
+libSkiaSharp.dll
