@@ -1,12 +1,8 @@
-name: Build
+name: Build and Release
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  release:
-    types: [ created ]
 
 jobs:
   build:
@@ -30,32 +26,65 @@ jobs:
           Expand-Archive dalamud.zip -DestinationPath $dest -Force
         shell: pwsh
 
+      - name: Get version
+        id: version
+        run: |
+          $version = (Select-Xml -Path "src/PanacheUI.csproj" -XPath "//Version").Node.InnerText
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
       - name: Build
         run: dotnet build src/PanacheUI.csproj --configuration Release --no-incremental
         shell: pwsh
 
-      - name: Collect artifacts
+      - name: Package
         run: |
-          $out  = "artifacts"
-          $bin  = "src/bin/x64/Release"
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "$bin/PanacheUI.dll"                              $out
-          Copy-Item "PanacheUI.json"                                  $out
-          Copy-Item "$bin/SkiaSharp.dll"                             $out -ErrorAction SilentlyContinue
-          Copy-Item "$bin/runtimes/win-x64/native/libSkiaSharp.dll"  $out -ErrorAction SilentlyContinue
+          $bin = "src/bin/x64/Release"
+          $dist = "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          Copy-Item "$bin/PanacheUI.dll" $dist
+          Copy-Item "PanacheUI.json"     $dist
+          Copy-Item "$bin/SkiaSharp.dll" $dist -ErrorAction SilentlyContinue
+
+          # Bundle libSkiaSharp in the runtimes subfolder so .NET finds it
+          $native = "$dist/runtimes/win-x64/native"
+          New-Item -ItemType Directory -Force -Path $native | Out-Null
+          Copy-Item "$bin/runtimes/win-x64/native/libSkiaSharp.dll" $native
+
+          Compress-Archive -Path "$dist/*" -DestinationPath PanacheUI.zip -Force
         shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PanacheUI
-          path: artifacts/
+          path: dist/
 
-      - name: Package and upload release
-        if: github.event_name == 'release'
+      - name: Update pluginmaster.json version
         run: |
-          Compress-Archive -Path artifacts/* -DestinationPath PanacheUI.zip
-          gh release upload ${{ github.ref_name }} PanacheUI.zip
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $json = @(Get-Content pluginmaster.json | ConvertFrom-Json)
+          $json[0].AssemblyVersion        = $version
+          $json[0].TestingAssemblyVersion = $version
+          $json | ConvertTo-Json -Depth 10 -AsArray | Set-Content pluginmaster.json
         shell: pwsh
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
+          files: PanacheUI.zip
+          make_latest: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit updated pluginmaster.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pluginmaster.json
+          git diff --staged --quiet || git commit -m "ci: update pluginmaster.json to v${{ steps.version.outputs.VERSION }}"
+          git push
+        shell: pwsh
