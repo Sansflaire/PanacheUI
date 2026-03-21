@@ -30,23 +30,19 @@ jobs:
           Expand-Archive dalamud.zip -DestinationPath $dest -Force
         shell: pwsh
 
-      - name: Prepare output directories
-        run: |
-          New-Item -ItemType Directory -Force -Path "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI" | Out-Null
-        shell: pwsh
-
       - name: Build
         run: dotnet build src/PanacheUI.csproj --configuration Release --no-incremental
         shell: pwsh
 
       - name: Collect artifacts
         run: |
-          $out = "artifacts"
+          $out  = "artifacts"
+          $bin  = "src/bin/x64/Release"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\PanacheUI.dll"    $out
-          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\PanacheUI.json"   $out
-          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\SkiaSharp.dll"    $out -ErrorAction SilentlyContinue
-          Copy-Item "$env:APPDATA\XIVLauncher\devPlugins\PanacheUI\libSkiaSharp.dll" $out -ErrorAction SilentlyContinue
+          Copy-Item "$bin/PanacheUI.dll"                              $out
+          Copy-Item "PanacheUI.json"                                  $out
+          Copy-Item "$bin/SkiaSharp.dll"                             $out -ErrorAction SilentlyContinue
+          Copy-Item "$bin/runtimes/win-x64/native/libSkiaSharp.dll"  $out -ErrorAction SilentlyContinue
         shell: pwsh
 
       - name: Upload artifact

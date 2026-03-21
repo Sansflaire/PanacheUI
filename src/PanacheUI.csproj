@@ -35,8 +35,9 @@
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.118.0-preview.1.2" />
   </ItemGroup>
 
-  <!-- Post-build: copy DLL + manifest + native SkiaSharp to devPlugins -->
-  <Target Name="CopyToDevPlugins" AfterTargets="Build">
+  <!-- Post-build: copy DLL + manifest + native SkiaSharp to devPlugins (Debug only) -->
+  <Target Name="CopyToDevPlugins" AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Debug'">
     <Copy
       SourceFiles="$(TargetPath)"
       DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
@@ -48,11 +49,13 @@
       OverwriteReadOnlyFiles="true"
       Condition="Exists('$(MSBuildProjectDirectory)\..\PanacheUI.json')"
     />
+    <!-- libSkiaSharp.dll lands in runtimes/win-x64/native/ — copy to devPlugins so it
+         can be found by plugins without Umbra already loaded -->
     <Copy
-      SourceFiles="$(OutputPath)libSkiaSharp.dll"
+      SourceFiles="$(OutputPath)runtimes\win-x64\native\libSkiaSharp.dll"
       DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
       OverwriteReadOnlyFiles="true"
-      Condition="Exists('$(OutputPath)libSkiaSharp.dll')"
+      Condition="Exists('$(OutputPath)runtimes\win-x64\native\libSkiaSharp.dll')"
     />
     <Copy
       SourceFiles="$(OutputPath)SkiaSharp.dll"
