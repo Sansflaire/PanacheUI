@@ -10,8 +10,14 @@
     "RepoUrl": "https://github.com/Sansflaire/PanacheUI",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 14,
-    "Tags": ["ui", "framework", "rendering"],
-    "CategoryTags": ["UI"],
+    "Tags": [
+      "ui",
+      "framework",
+      "rendering"
+    ],
+    "CategoryTags": [
+      "UI"
+    ],
     "IsHide": false,
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip",
