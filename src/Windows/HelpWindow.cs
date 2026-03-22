@@ -141,11 +141,29 @@ public sealed class HelpWindow : IDisposable
             var hdrPos = ImGui.GetCursorScreenPos();
             ImGui.Image(_hdrHandle.Value, new Vector2(hdrW, HeaderH));
 
-            // Drag the window by clicking anywhere in the header
+            // Close button — top-right corner of header
+            const float BtnSize = 24f;
+            const float BtnPad  = 8f;
+            var btnPos = new Vector2(hdrPos.X + hdrW - BtnSize - BtnPad,
+                                     hdrPos.Y + (HeaderH - BtnSize) * 0.5f);
+            ImGui.SetCursorScreenPos(btnPos);
+            ImGui.PushStyleColor(ImGuiCol.Button,        new Vector4(0f,    0f,    0f,    0.30f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.85f, 0.20f, 0.20f, 0.80f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.85f, 0.10f, 0.10f, 1.00f));
+            ImGui.PushStyleColor(ImGuiCol.Text,          new Vector4(1f,    1f,    1f,    0.90f));
+            ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
+            if (ImGui.Button("X##close_help", new Vector2(BtnSize, BtnSize)))
+                IsVisible = false;
+            ImGui.PopStyleColor(4);
+            ImGui.PopStyleVar();
+
+            // Drag — anywhere in the header except the close button
             var mouse = ImGui.GetMousePos();
             float mx = mouse.X - hdrPos.X;
             float my = mouse.Y - hdrPos.Y;
-            if (mx >= 0 && mx < hdrW && my >= 0 && my < HeaderH
+            bool overClose = mouse.X >= btnPos.X && mouse.X < btnPos.X + BtnSize
+                          && mouse.Y >= btnPos.Y && mouse.Y < btnPos.Y + BtnSize;
+            if (!overClose && mx >= 0 && mx < hdrW && my >= 0 && my < HeaderH
              && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
             {
                 var delta = ImGui.GetIO().MouseDelta;

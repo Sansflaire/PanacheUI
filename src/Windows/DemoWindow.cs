@@ -111,30 +111,50 @@ public sealed class DemoWindow : IDisposable
 
         if (_texHandle.HasValue)
         {
-            var imagePos = ImGui.GetCursorScreenPos();
+            var imagePos    = ImGui.GetCursorScreenPos();
             ImGui.Image(_texHandle.Value, new Vector2(_surfaceW, _surfaceH));
+            bool imageHovered = ImGui.IsItemHovered();
+
+            // Close button — top-right corner
+            const float BtnSize = 24f;
+            const float BtnPad  = 8f;
+            var btnPos = new Vector2(imagePos.X + _surfaceW - BtnSize - BtnPad,
+                                     imagePos.Y + BtnPad);
+            ImGui.SetCursorScreenPos(btnPos);
+            ImGui.PushStyleColor(ImGuiCol.Button,        new Vector4(0f,    0f,    0f,    0.30f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.85f, 0.20f, 0.20f, 0.80f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.85f, 0.10f, 0.10f, 1.00f));
+            ImGui.PushStyleColor(ImGuiCol.Text,          new Vector4(1f,    1f,    1f,    0.90f));
+            ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
+            if (ImGui.Button("X##close_demo", new Vector2(BtnSize, BtnSize)))
+                IsVisible = false;
+            ImGui.PopStyleColor(4);
+            ImGui.PopStyleVar();
 
             var mouse = ImGui.GetMousePos();
             float mx = mouse.X - imagePos.X;
             float my = mouse.Y - imagePos.Y;
 
-            // Drag: click+drag anywhere in the top 80px header zone to move window
-            if (my >= 0 && my < 80 && mx >= 0 && mx < _surfaceW
+            bool overClose = mouse.X >= btnPos.X && mouse.X < btnPos.X + BtnSize
+                          && mouse.Y >= btnPos.Y && mouse.Y < btnPos.Y + BtnSize;
+
+            // Feature Overview button bounds
+            bool overOverview = _btnNode != null
+                             && _lastLayout.TryGetValue(_btnNode, out var btnBox)
+                             && mx >= btnBox.X && mx <= btnBox.Right
+                             && my >= btnBox.Y && my <= btnBox.Bottom;
+
+            // Drag: anywhere on the surface except buttons
+            if (!overClose && !overOverview && imageHovered
              && ImGui.IsMouseDragging(ImGuiMouseButton.Left))
             {
                 var delta = ImGui.GetIO().MouseDelta;
                 _windowPos = (_windowPos ?? ImGui.GetWindowPos()) + delta;
             }
 
-            // Hit-test: check if mouse clicked inside the Feature Overview button node
-            if (_btnNode != null
-             && _lastLayout.TryGetValue(_btnNode, out var btnBox)
-             && ImGui.IsItemHovered()
-             && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
-            {
-                if (mx >= btnBox.X && mx <= btnBox.Right && my >= btnBox.Y && my <= btnBox.Bottom)
-                    _help.IsVisible = !_help.IsVisible;
-            }
+            // Hit-test: Feature Overview button click
+            if (overOverview && imageHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                _help.IsVisible = !_help.IsVisible;
         }
         else
         {
