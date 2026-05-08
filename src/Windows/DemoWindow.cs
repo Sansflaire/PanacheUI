@@ -18,7 +18,7 @@ namespace PanacheUI.Windows;
 /// </summary>
 public sealed class DemoWindow : IDisposable
 {
-    public bool IsVisible = true;
+    public bool IsVisible = false;
 
     private readonly ITextureProvider _texProvider;
     private readonly HelpWindow       _help;

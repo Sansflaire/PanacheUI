@@ -68,7 +68,7 @@ public sealed class EffectLabWindow : IDisposable
         if (!_windowPos.HasValue)
             _windowPos = ImGui.GetWindowPos();
 
-        _animTime += ImGui.GetIO().DeltaTime;
+        _animTime += Math.Min(ImGui.GetIO().DeltaTime, 0.05f);
 
         // ── Header bar (drag handle) ──────────────────────────────────────────
         var headerPos = ImGui.GetCursorScreenPos();

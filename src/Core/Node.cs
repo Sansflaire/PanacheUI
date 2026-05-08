@@ -20,7 +20,7 @@ public class Node
 
     public Style Style { get; set; } = new();
 
-    /// <summary>Per-node animation state (hover, press, ripple, entrance, shake, etc.).</summary>
+    /// <summary>Per-node animation state (hover, press, ripple, entrance, shake, scroll, flash, etc.).</summary>
     public NodeAnimState Anim { get; } = new();
 
     /// <summary>CSS-like class names. Checked by stylesheet rules.</summary>
@@ -104,13 +104,28 @@ public class Node
 
     public bool IsInteractive { get; set; }
 
+    /// <summary>When true, this node can receive keyboard focus via click or programmatic focus.</summary>
+    public bool IsFocusable { get; set; }
+
     public event Action<Node>? OnClick;
     public event Action<Node>? OnMouseEnter;
     public event Action<Node>? OnMouseLeave;
 
-    internal void FireClick()      => OnClick?.Invoke(this);
-    internal void FireMouseEnter() => OnMouseEnter?.Invoke(this);
-    internal void FireMouseLeave() => OnMouseLeave?.Invoke(this);
+    /// <summary>Fired when a scroll delta is applied over this node (OverflowY.Scroll nodes).</summary>
+    public event Action<Node>? OnScroll;
+
+    /// <summary>Fired when a key is pressed and this node has keyboard focus. Arg is the raw key code.</summary>
+    public event Action<Node, int>? OnKeyDown;
+
+    /// <summary>Fired when a character is typed and this node has keyboard focus.</summary>
+    public event Action<Node, char>? OnKeyChar;
+
+    internal void FireClick()              => OnClick?.Invoke(this);
+    internal void FireMouseEnter()         => OnMouseEnter?.Invoke(this);
+    internal void FireMouseLeave()         => OnMouseLeave?.Invoke(this);
+    internal void FireScroll()             => OnScroll?.Invoke(this);
+    internal void FireKeyDown(int keyCode) => OnKeyDown?.Invoke(this, keyCode);
+    internal void FireKeyChar(char c)      => OnKeyChar?.Invoke(this, c);
 
     // ── Dirty tracking ──────────────────────────────────────────────────────
 
@@ -123,7 +138,11 @@ public class Node
         Parent?.MarkDirty();
     }
 
-    internal void ClearDirty() => IsDirty = false;
+    internal void ClearDirty()
+    {
+        IsDirty = false;
+        foreach (var c in _children) c.ClearDirty();
+    }
 
     // ── Convenience builder API ─────────────────────────────────────────────
 

@@ -33,9 +33,45 @@ public enum TextOverflow
     Ellipsis,
 }
 
+/// <summary>Position mode — controls whether a node participates in normal flow layout.</summary>
+public enum PositionMode
+{
+    /// <summary>Default — node participates in parent flow layout.</summary>
+    Flow,
+    /// <summary>
+    /// Removed from flow. Placed at (Style.Left, Style.Top) relative to the parent's content area.
+    /// Does not affect parent size. Renders in tree order unless ZIndex overrides draw order.
+    /// </summary>
+    Absolute,
+}
+
+/// <summary>Controls whether a node and its subtree receive pointer events.</summary>
+public enum PointerEvents
+{
+    /// <summary>Default — node receives hover, click, and scroll events normally.</summary>
+    Auto,
+    /// <summary>
+    /// Node and all descendants are excluded from hit-testing.
+    /// Pointer events pass through to nodes behind/below this subtree.
+    /// </summary>
+    None,
+}
+
+/// <summary>How overflow content is handled on the Y axis.</summary>
+public enum OverflowMode
+{
+    /// <summary>Default — children outside the bounds are clipped.</summary>
+    Clip,
+    /// <summary>
+    /// Children are laid out at their natural height regardless of the node's Height.
+    /// The node clips to its Height and is scrollable via scroll wheel.
+    /// </summary>
+    Scroll,
+}
+
 /// <summary>
 /// Generative / animated overlay effect drawn on top of a node's background.
-/// Set via Style.Effect. Parameters are in Style.Effect*.
+/// Set via Style.Effect or Style.AddEffect(). Parameters are in Style.Effect*.
 /// </summary>
 public enum NodeEffect
 {

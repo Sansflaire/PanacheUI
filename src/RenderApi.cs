@@ -12,7 +12,7 @@ using SkiaSharp;
 namespace PanacheUI;
 
 /// <summary>
-/// Local HTTP server on port 17778 for Claude to self-test rendered effects.
+/// Local HTTP server on port 17779 for Claude to self-test rendered effects.
 /// Renders any NodeEffect to a PNG strip (N frames across time) and returns the file path.
 ///
 /// Endpoints:
@@ -130,9 +130,8 @@ public sealed class RenderApi : IDisposable
             surf.Canvas.Clear(new SKColor(15, 15, 34));
             renderer.Render(surf.Canvas, node, map, t);
 
-            // Blit frame into strip
-            var frameBytes = surf.EncodePng();
-            using var frameImg = SKImage.FromEncodedData(frameBytes);
+            // Blit frame into strip (zero-copy snapshot — no PNG encode/decode round-trip)
+            using var frameImg = surf.Snapshot();
             stripCanvas.DrawImage(frameImg, SKRect.Create(i * frameW, 0, frameW, frameH));
 
             // Time label

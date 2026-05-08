@@ -30,9 +30,15 @@ public sealed class RenderSurface : IDisposable
     public SKCanvas Canvas => _surface.Canvas;
 
     /// <summary>
-    /// Copies the current surface pixels into <paramref name="destination"/>.
-    /// Buffer must be at least Width * Height * 4 bytes.
+    /// Returns a snapshot SKImage backed by the current surface pixels.
+    /// Caller must dispose the returned image before drawing to this surface again.
     /// </summary>
+    public SKImage Snapshot()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _surface.Snapshot();
+    }
+
     /// <summary>Encodes the current surface as a PNG and returns the raw bytes.</summary>
     public byte[] EncodePng()
     {
@@ -46,10 +52,17 @@ public sealed class RenderSurface : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // Flush before reading — no-op for CPU raster surfaces (drawing is synchronous)
+        // but required for any future GPU-backed surface and makes intent explicit.
+        _surface.Canvas.Flush();
+
         var handle = GCHandle.Alloc(destination, GCHandleType.Pinned);
         try
         {
-            var info = new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul);
+            // Unpremul here converts premul→straight on readback so ImGui's SrcAlpha blend
+            // doesn't multiply alpha in a second time (which causes black halos on blurs/glows).
+            // The surface itself stays Premul — required for Skia filter compositing math.
+            var info = new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
             return _surface.ReadPixels(info, handle.AddrOfPinnedObject(), Width * 4, 0, 0);
         }
         finally

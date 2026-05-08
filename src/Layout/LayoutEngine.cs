@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using PanacheUI.Core;
 using SkiaSharp;
 
@@ -18,26 +19,16 @@ public class LayoutEngine
     private readonly Dictionary<Node, LayoutBox> _layout = new();
 
     /// <summary>Run layout on the full tree rooted at <paramref name="root"/>.</summary>
-    /// <param name="root">Root node of the UI tree.</param>
-    /// <param name="availWidth">Total width available (surface width).</param>
-    /// <param name="availHeight">Total height available (surface height).</param>
-    /// <returns>Dictionary mapping every node in the tree to its screen rect.</returns>
     public Dictionary<Node, LayoutBox> Compute(Node root, float availWidth, float availHeight)
     {
         _layout.Clear();
-
-        // Pass 1: measure content sizes bottom-up
         MeasureNode(root);
-
-        // Pass 2: place nodes top-down
         PlaceNode(root, 0, 0, availWidth, availHeight);
-
         return _layout;
     }
 
-    // ── Pass 1: measure ─────────────────────────────────────────────────────
+    // ── Pass 1: measure ──────────────────────────────────────────────────────
 
-    /// <summary>Returns the intrinsic content size (excluding padding) of this node.</summary>
     private (float w, float h) MeasureNode(Node node)
     {
         Style s = node.Style;
@@ -56,18 +47,48 @@ public class LayoutEngine
             return (0, 0);
         }
 
-        // Container — measure children first
+        // Only flow children contribute to intrinsic size
+        var flowChildren = GetFlowChildren(node);
+
         float contentW = 0, contentH = 0;
 
-        if (s.Flow == Flow.Horizontal)
+        if (s.Flow == Flow.Horizontal && s.FlowWrap)
+        {
+            // Wrapped horizontal: simulate rows to get intrinsic height
+            // We don't know final width here so we use a loose estimate.
+            // The actual wrap happens in PlaceNode. Here we just sum all children widths
+            // and heights to get a rough intrinsic — PlaceNode will correct it.
+            float cursorX = 0, maxH = 0, totalH = 0;
+            float approxWidth = s.WidthMode == SizeMode.Fixed ? s.Width : float.MaxValue;
+            float innerW = approxWidth - s.Padding.Horizontal;
+
+            foreach (var child in flowChildren)
+            {
+                var (cw, ch) = MeasureChild(child);
+                float childOuter = child.Style.Margin.Left + cw + child.Style.Margin.Right;
+                float childH     = child.Style.Margin.Top  + ch + child.Style.Margin.Bottom;
+
+                if (cursorX > 0 && cursorX + childOuter > innerW)
+                {
+                    totalH  += maxH + s.Gap;
+                    cursorX  = 0;
+                    maxH     = 0;
+                }
+                cursorX += childOuter + (cursorX > 0 ? s.Gap : 0);
+                maxH     = Math.Max(maxH, childH);
+                contentW = Math.Max(contentW, cursorX);
+            }
+            contentH = totalH + maxH;
+        }
+        else if (s.Flow == Flow.Horizontal)
         {
             float cursorX = 0, maxH = 0;
-            for (int i = 0; i < node.Children.Count; i++)
+            for (int i = 0; i < flowChildren.Count; i++)
             {
-                var child = node.Children[i];
+                var child = flowChildren[i];
                 var (cw, ch) = MeasureChild(child);
                 cursorX += child.Style.Margin.Left + cw + child.Style.Margin.Right;
-                if (i < node.Children.Count - 1) cursorX += s.Gap;
+                if (i < flowChildren.Count - 1) cursorX += s.Gap;
                 maxH = Math.Max(maxH, child.Style.Margin.Top + ch + child.Style.Margin.Bottom);
             }
             contentW = cursorX;
@@ -76,12 +97,12 @@ public class LayoutEngine
         else // Vertical
         {
             float cursorY = 0, maxW = 0;
-            for (int i = 0; i < node.Children.Count; i++)
+            for (int i = 0; i < flowChildren.Count; i++)
             {
-                var child = node.Children[i];
+                var child = flowChildren[i];
                 var (cw, ch) = MeasureChild(child);
                 cursorY += child.Style.Margin.Top + ch + child.Style.Margin.Bottom;
-                if (i < node.Children.Count - 1) cursorY += s.Gap;
+                if (i < flowChildren.Count - 1) cursorY += s.Gap;
                 maxW = Math.Max(maxW, child.Style.Margin.Left + cw + child.Style.Margin.Right);
             }
             contentW = maxW;
@@ -91,7 +112,6 @@ public class LayoutEngine
         return (contentW, contentH);
     }
 
-    /// <summary>Returns the outer size of a child (content + padding), for use in parent measurement.</summary>
     private (float w, float h) MeasureChild(Node child)
     {
         Style s = child.Style;
@@ -100,14 +120,12 @@ public class LayoutEngine
         float w = s.WidthMode  == SizeMode.Fixed ? s.Width  : contentW + s.Padding.Horizontal;
         float h = s.HeightMode == SizeMode.Fixed ? s.Height : contentH + s.Padding.Vertical;
 
-        // Fill-mode children contribute 0 to parent's intrinsic size (they expand later)
         if (s.WidthMode  == SizeMode.Fill) w = 0;
         if (s.HeightMode == SizeMode.Fill) h = 0;
 
         return (w, h);
     }
 
-    /// <summary>Returns the natural outer size of a node ignoring Fill mode (used for flex distribution).</summary>
     private (float w, float h) MeasureNaturalOuter(Node child)
     {
         Style s = child.Style;
@@ -123,7 +141,6 @@ public class LayoutEngine
     {
         Style s = node.Style;
 
-        // Determine this node's outer size
         var (intrinsicW, intrinsicH) = MeasureNode(node);
 
         float nodeW = s.WidthMode switch
@@ -142,6 +159,21 @@ public class LayoutEngine
             _              => availH,
         };
 
+        // ── Min / Max constraints ────────────────────────────────────────────
+        if (s.MinWidth  > 0) nodeW = Math.Max(nodeW, s.MinWidth);
+        if (s.MaxWidth  > 0) nodeW = Math.Min(nodeW, s.MaxWidth);
+        if (s.MinHeight > 0) nodeH = Math.Max(nodeH, s.MinHeight);
+        if (s.MaxHeight > 0) nodeH = Math.Min(nodeH, s.MaxHeight);
+
+        // ── Aspect ratio ─────────────────────────────────────────────────────
+        if (s.AspectRatio > 0)
+        {
+            if (s.WidthMode != SizeMode.Fit || s.HeightMode == SizeMode.Fit)
+                nodeH = nodeW / s.AspectRatio;  // derive height from width
+            else
+                nodeW = nodeH * s.AspectRatio;  // derive width from height
+        }
+
         float nodeX = x + s.Margin.Left;
         float nodeY = y + s.Margin.Top;
 
@@ -153,75 +185,195 @@ public class LayoutEngine
         float contentY = nodeY + s.Padding.Top;
         float contentW = nodeW - s.Padding.Horizontal;
         float contentH = nodeH - s.Padding.Vertical;
-        int   n        = node.Children.Count;
-        float totalGap = n > 1 ? s.Gap * (n - 1) : 0;
 
-        if (s.Flow == Flow.Horizontal)
+        // ── Flow layout ──────────────────────────────────────────────────────
+
+        var flowChildren = GetFlowChildren(node);
+        int n = flowChildren.Count;
+
+        if (s.Flow == Flow.Horizontal && s.FlowWrap)
         {
-            // Pre-pass: compute how much width fixed/fit children need,
-            // then divide what's left equally among Fill children.
-            int   fillW_count  = 0;
-            float fixedW_total = totalGap;
-            for (int i = 0; i < n; i++)
-            {
-                var child = node.Children[i];
-                fixedW_total += child.Style.Margin.Horizontal;
-                if (child.Style.WidthMode == SizeMode.Fill)
-                    fillW_count++;
-                else
-                    fixedW_total += MeasureNaturalOuter(child).w;
-            }
-            float fillW = fillW_count > 0
-                ? Math.Max(0, (contentW - fixedW_total) / fillW_count)
-                : 0;
-
-            float cursor = 0;
-            for (int i = 0; i < n; i++)
-            {
-                var child = node.Children[i];
-                float childAvailW = child.Style.WidthMode == SizeMode.Fill
-                    ? fillW
-                    : MeasureNaturalOuter(child).w;
-                PlaceNode(child, contentX + cursor, contentY, childAvailW, contentH);
-                var box = _layout[child];
-                cursor += child.Style.Margin.Left + box.Width + child.Style.Margin.Right;
-                if (i < n - 1) cursor += s.Gap;
-            }
+            PlaceHorizontalWrap(node, flowChildren, contentX, contentY, contentW, contentH, s);
+        }
+        else if (s.Flow == Flow.Horizontal)
+        {
+            PlaceHorizontal(flowChildren, contentX, contentY, contentW, contentH, s, n);
         }
         else // Vertical
         {
-            // Pre-pass: divide remaining height among Fill children.
-            int   fillH_count  = 0;
-            float fixedH_total = totalGap;
-            for (int i = 0; i < n; i++)
-            {
-                var child = node.Children[i];
-                fixedH_total += child.Style.Margin.Vertical;
-                if (child.Style.HeightMode == SizeMode.Fill)
-                    fillH_count++;
-                else
-                    fixedH_total += MeasureNaturalOuter(child).h;
-            }
-            float fillH = fillH_count > 0
-                ? Math.Max(0, (contentH - fixedH_total) / fillH_count)
-                : 0;
+            // For OverflowY.Scroll, allow children to lay out at their natural height
+            float childAvailH = s.OverflowY == OverflowMode.Scroll
+                ? float.MaxValue / 2f
+                : contentH;
+            PlaceVertical(flowChildren, contentX, contentY, contentW, childAvailH, s, n);
 
-            float cursor = 0;
-            for (int i = 0; i < n; i++)
+            // Record total content height for scroll clamping
+            if (s.OverflowY == OverflowMode.Scroll && flowChildren.Count > 0)
             {
-                var child = node.Children[i];
-                float childAvailH = child.Style.HeightMode == SizeMode.Fill
-                    ? fillH
-                    : MeasureNaturalOuter(child).h;
-                PlaceNode(child, contentX, contentY + cursor, contentW, childAvailH);
-                var box = _layout[child];
-                cursor += child.Style.Margin.Top + box.Height + child.Style.Margin.Bottom;
-                if (i < n - 1) cursor += s.Gap;
+                float maxBottom = contentY;
+                foreach (var child in flowChildren)
+                {
+                    if (_layout.TryGetValue(child, out var cb))
+                        maxBottom = Math.Max(maxBottom, cb.Bottom + child.Style.Margin.Bottom);
+                }
+                float totalContentH = (maxBottom - contentY) + s.Padding.Bottom;
+                _layout[node] = _layout[node] with { ContentHeight = totalContentH };
             }
+        }
+
+        // ── Absolute children ─────────────────────────────────────────────────
+        foreach (var child in node.Children)
+        {
+            if (child.Style.Position != PositionMode.Absolute) continue;
+            var (natW, natH) = MeasureNaturalOuter(child);
+            float childAvailW = child.Style.WidthMode == SizeMode.Fill ? contentW : natW;
+            float childAvailH = child.Style.HeightMode == SizeMode.Fill ? contentH : natH;
+            // Place relative to parent content origin at (Left, Top)
+            PlaceNode(child,
+                contentX + child.Style.Left - child.Style.Margin.Left,
+                contentY + child.Style.Top  - child.Style.Margin.Top,
+                childAvailW, childAvailH);
         }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    private void PlaceHorizontal(
+        List<Node> children, float contentX, float contentY,
+        float contentW, float contentH, Style s, int n)
+    {
+        float totalGap    = n > 1 ? s.Gap * (n - 1) : 0;
+        int   fillWCount  = 0;
+        float fixedWTotal = totalGap;
+
+        foreach (var child in children)
+        {
+            fixedWTotal += child.Style.Margin.Horizontal;
+            if (child.Style.WidthMode == SizeMode.Fill)
+                fillWCount++;
+            else
+                fixedWTotal += MeasureNaturalOuter(child).w;
+        }
+
+        float fillW = fillWCount > 0
+            ? Math.Max(0, (contentW - fixedWTotal) / fillWCount)
+            : 0;
+
+        float cursor = 0;
+        for (int i = 0; i < n; i++)
+        {
+            var child = children[i];
+            float childAvailW = child.Style.WidthMode == SizeMode.Fill
+                ? fillW
+                : MeasureNaturalOuter(child).w;
+            PlaceNode(child, contentX + cursor, contentY, childAvailW, contentH);
+            var box = _layout[child];
+            cursor += child.Style.Margin.Left + box.Width + child.Style.Margin.Right;
+            if (i < n - 1) cursor += s.Gap;
+        }
+    }
+
+    private void PlaceHorizontalWrap(
+        Node parent, List<Node> children,
+        float contentX, float contentY,
+        float contentW, float contentH, Style s)
+    {
+        // Measure natural sizes upfront
+        var sizes = new (float w, float h)[children.Count];
+        for (int i = 0; i < children.Count; i++)
+            sizes[i] = MeasureNaturalOuter(children[i]);
+
+        // Build rows greedily
+        var rows = new List<List<int>>();
+        var currentRow = new List<int>();
+        float rowWidth = 0;
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            var child = children[i];
+            float childOuterW = child.Style.Margin.Horizontal + sizes[i].w;
+            float gapAdd = currentRow.Count > 0 ? s.Gap : 0;
+
+            if (currentRow.Count > 0 && rowWidth + gapAdd + childOuterW > contentW)
+            {
+                rows.Add(currentRow);
+                currentRow = new List<int>();
+                rowWidth = 0;
+            }
+
+            currentRow.Add(i);
+            rowWidth += (currentRow.Count > 1 ? s.Gap : 0) + childOuterW;
+        }
+        if (currentRow.Count > 0) rows.Add(currentRow);
+
+        // Place each row
+        float rowY = 0;
+        foreach (var row in rows)
+        {
+            // Find row height
+            float rowH = 0;
+            foreach (int idx in row)
+                rowH = Math.Max(rowH, children[idx].Style.Margin.Vertical + sizes[idx].h);
+
+            float cursorX = 0;
+            for (int ri = 0; ri < row.Count; ri++)
+            {
+                int idx   = row[ri];
+                var child = children[idx];
+                float childW = child.Style.WidthMode == SizeMode.Fill
+                    ? contentW - (sizes[idx].w == 0 ? 0 : sizes[idx].w)  // treat Fill as Fit in wrap
+                    : sizes[idx].w;
+                PlaceNode(child, contentX + cursorX, contentY + rowY, childW, rowH);
+                var box = _layout[child];
+                cursorX += child.Style.Margin.Left + box.Width + child.Style.Margin.Right;
+                if (ri < row.Count - 1) cursorX += s.Gap;
+            }
+            rowY += rowH + s.Gap;
+        }
+    }
+
+    private void PlaceVertical(
+        List<Node> children, float contentX, float contentY,
+        float contentW, float contentH, Style s, int n)
+    {
+        float totalGap    = n > 1 ? s.Gap * (n - 1) : 0;
+        int   fillHCount  = 0;
+        float fixedHTotal = totalGap;
+
+        foreach (var child in children)
+        {
+            fixedHTotal += child.Style.Margin.Vertical;
+            if (child.Style.HeightMode == SizeMode.Fill)
+                fillHCount++;
+            else
+                fixedHTotal += MeasureNaturalOuter(child).h;
+        }
+
+        float fillH = fillHCount > 0 && contentH < float.MaxValue / 2f
+            ? Math.Max(0, (contentH - fixedHTotal) / fillHCount)
+            : 0;
+
+        float cursor = 0;
+        for (int i = 0; i < n; i++)
+        {
+            var child = children[i];
+            float childAvailH = child.Style.HeightMode == SizeMode.Fill
+                ? fillH
+                : MeasureNaturalOuter(child).h;
+            PlaceNode(child, contentX, contentY + cursor, contentW, childAvailH);
+            var box = _layout[child];
+            cursor += child.Style.Margin.Top + box.Height + child.Style.Margin.Bottom;
+            if (i < n - 1) cursor += s.Gap;
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static List<Node> GetFlowChildren(Node node)
+    {
+        var list = new List<Node>(node.Children.Count);
+        foreach (var child in node.Children)
+            if (child.Style.Position == PositionMode.Flow) list.Add(child);
+        return list;
+    }
 
     private static SKFont CreateFont(Style s)
     {
@@ -233,19 +385,21 @@ public class LayoutEngine
         return new SKFont(typeface, s.FontSize);
     }
 
-    public void Dispose()
-    {
-    }
+    public void Dispose() { }
 }
 
 /// <summary>The computed screen-space rect for a node after layout.</summary>
 public readonly record struct LayoutBox(float X, float Y, float Width, float Height)
 {
+    /// <summary>For OverflowY.Scroll: total natural height of children (may exceed Height).</summary>
+    public float ContentHeight { get; init; } = 0f;
+
     public float Right  => X + Width;
     public float Bottom => Y + Height;
 
     public SKRect ToSkRect() => new(X, Y, Right, Bottom);
 
+    /// <summary>Uniform-radius rounded rect.</summary>
     public SKRoundRect ToSkRoundRect(float radius)
     {
         var rr = new SKRoundRect();
@@ -253,6 +407,20 @@ public readonly record struct LayoutBox(float X, float Y, float Width, float Hei
         {
             new(radius, radius), new(radius, radius),
             new(radius, radius), new(radius, radius),
+        });
+        return rr;
+    }
+
+    /// <summary>Per-corner rounded rect. Order: top-left, top-right, bottom-right, bottom-left.</summary>
+    public SKRoundRect ToSkRoundRect(float topLeft, float topRight, float bottomRight, float bottomLeft)
+    {
+        var rr = new SKRoundRect();
+        rr.SetRectRadii(ToSkRect(), new SKPoint[]
+        {
+            new(topLeft,      topLeft),
+            new(topRight,     topRight),
+            new(bottomRight,  bottomRight),
+            new(bottomLeft,   bottomLeft),
         });
         return rr;
     }
