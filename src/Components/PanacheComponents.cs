@@ -1,23 +1,29 @@
 using PanacheUI.Core;
+using PanacheUI.Theming;
 
 namespace PanacheUI.Components;
 
 /// <summary>
-/// Shared theme colors for PanacheUI windows.
-/// Use these as the base palette so all windows look consistent.
+/// Legacy alias — reads the active <see cref="PanacheTheme"/>.
+///
+/// Kept so pre-theming code that references <c>Theme.Base</c> etc. keeps
+/// working. New code should snapshot <see cref="PanacheThemes.Active"/>
+/// once at init and subscribe to <see cref="PanacheThemes.ActiveChanged"/>
+/// (see <c>Theming/PanacheTheme.cs</c>), not read these properties per
+/// frame.
 /// </summary>
 public static class Theme
 {
     /// <summary>Root window background — the darkest layer.</summary>
-    public static readonly PColor Base   = PColor.FromHex("#0D0D1A");
+    public static PColor Base       => PanacheThemes.Active.Base;
     /// <summary>Section panel background — slightly lighter than Base.</summary>
-    public static readonly PColor Panel  = PColor.FromHex("#131328");
+    public static PColor Panel      => PanacheThemes.Active.Panel;
     /// <summary>Inner card background — between Base and Panel.</summary>
-    public static readonly PColor Panel2 = PColor.FromHex("#0F0F22");
+    public static PColor Panel2     => PanacheThemes.Active.Panel2;
     /// <summary>Muted body text.</summary>
-    public static readonly PColor TextMuted = PColor.FromHex("#9999BB");
+    public static PColor TextMuted  => PanacheThemes.Active.TextMuted;
     /// <summary>Subtle body text.</summary>
-    public static readonly PColor TextSubtle = PColor.FromHex("#666688");
+    public static PColor TextSubtle => PanacheThemes.Active.TextSubtle;
 }
 
 /// <summary>
