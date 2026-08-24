@@ -5,6 +5,7 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Plugin.Services;
 using PanacheUI.Components;
 using PanacheUI.Core;
+using PanacheUI.Icons;
 using PanacheUI.Layout;
 using PanacheUI.Rendering;
 using ImTextureID = Dalamud.Bindings.ImGui.ImTextureID;
@@ -22,38 +23,52 @@ public sealed class DemoWindow : IDisposable
 
     private readonly ITextureProvider _texProvider;
     private readonly HelpWindow       _help;
-    private readonly LayoutEngine     _layout;
-    private readonly SkiaRenderer     _renderer;
+    private readonly Action           _openIconBrowser;
 
     private System.Numerics.Vector2? _windowPos;  // null = use ImGui default on first frame
 
-    private RenderSurface  _surface;
-    private TextureManager _textures;
+    private PanacheSurface _surface;
     private Node           _root;
 
     private int          _surfaceW;
     private int          _surfaceH;
     private ImTextureID? _texHandle;
-    private bool         _needsRender = true;
     private float        _animTime;
 
     // Layout snapshot for hit-testing
     private Dictionary<Node, LayoutBox> _lastLayout = new();
     private Node?                        _btnNode;
 
-    public DemoWindow(ITextureProvider texProvider, HelpWindow help)
+    // ── Right-click demo state ──────────────────────────────────────────────
+    // All three live outside the node tree because the tree is rebuilt every frame —
+    // exactly the same reason ContextMenuState exists as a standalone class.
+    private bool   _rcLocked;
+    private int    _rcColorIndex;
+    private readonly ContextMenuState _rcMenu = new();
+
+    private static readonly PColor[] RightClickCycleColors =
     {
-        _texProvider = texProvider;
-        _help        = help;
-        _layout      = new LayoutEngine();
-        _renderer    = new SkiaRenderer();
+        PColor.FromHex("#6BB8FF"), PColor.FromHex("#6BFFB8"),
+        PColor.FromHex("#FFD46B"), PColor.FromHex("#FF6B8F"),
+    };
+
+    public DemoWindow(ITextureProvider texProvider, HelpWindow help, Action openIconBrowser)
+    {
+        _texProvider     = texProvider;
+        _help            = help;
+        _openIconBrowser = openIconBrowser;
 
         // Start with a reasonable default; will resize to window on first frame
         _surfaceW = 520;
         _surfaceH = 420;
-        _surface  = new RenderSurface(_surfaceW, _surfaceH);
-        _textures = new TextureManager(_texProvider);
-        _root     = BuildTree(_surfaceW, _surfaceH);
+
+        // PanacheSurface rather than the raw RenderSurface/TextureManager pair: it owns
+        // the repaint gating and registers with PanacheStats, so this window shows up in
+        // /panacheui stats like any consumer window. Building the pipeline by hand here
+        // is exactly how this window used to escape both.
+        _surface = new PanacheSurface(_texProvider, _surfaceW, _surfaceH);
+        _surface.Stats.Label = "Demo";
+        _root    = BuildTree(_surfaceW, _surfaceH);
     }
 
     public void Draw()
@@ -87,56 +102,54 @@ public sealed class DemoWindow : IDisposable
             _surfaceW = newW;
             _surfaceH = newH;
 
-            _surface.Dispose();
-            _textures.Dispose();
-            _surface  = new RenderSurface(_surfaceW, _surfaceH);
-            _textures = new TextureManager(_texProvider);
-            _root     = BuildTree(_surfaceW, _surfaceH);
-            _btnNode  = _root.FindById("btn-overview");
-            _needsRender = true;
+            _surface.Resize(_surfaceW, _surfaceH);
+            _root    = BuildTree(_surfaceW, _surfaceH);
+            _btnNode = _root.FindById("btn-overview");
         }
 
         // Animate banner gradient each frame
         _animTime += ImGui.GetIO().DeltaTime;
         UpdateAnimatedNode();
 
-        if (_needsRender || _root.IsDirty)
-        {
-            _lastLayout  = _layout.Compute(_root, _surfaceW, _surfaceH);
-            _renderer.Render(_surface.Canvas, _root, _lastLayout, _animTime);
-            _texHandle   = _textures.Upload(_surface);
-            _needsRender = false;
-            _root.ClearDirty();
-        }
+        // Cursor position is stable until ImGui.Image consumes it, so sampling it here
+        // gives the same origin the image will occupy — needed to put the mouse into
+        // surface-local space before rendering.
+        var origin     = ImGui.GetCursorScreenPos();
+        var mousePos   = ImGui.GetMousePos();
+        var localMouse = new Vector2(mousePos.X - origin.X, mousePos.Y - origin.Y);
+        bool windowHovered = ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows
+                                                  | ImGuiHoveredFlags.AllowWhenBlockedByPopup
+                                                  | ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
+        bool mouseDown  = ImGui.IsMouseDown(ImGuiMouseButton.Left);
+        bool mouseClick = ImGui.IsMouseClicked(ImGuiMouseButton.Left) && windowHovered;
+        bool rightDown  = ImGui.IsMouseDown(ImGuiMouseButton.Right);
+        bool rightClick = ImGui.IsMouseClicked(ImGuiMouseButton.Right) && windowHovered;
+
+        var (tex, layout) = _surface.Render(_root, _animTime, localMouse, mouseDown, mouseClick,
+                                            ImGui.GetIO().MouseWheel, ImGui.GetIO().DeltaTime,
+                                            forceRedraw: false,
+                                            rightMouseDown: rightDown, rightMouseClicked: rightClick);
+        _texHandle  = tex;
+        _lastLayout = layout;
 
         if (_texHandle.HasValue)
         {
-            var imagePos    = ImGui.GetCursorScreenPos();
+            var imagePos    = origin;
             ImGui.Image(_texHandle.Value, new Vector2(_surfaceW, _surfaceH));
             bool imageHovered = ImGui.IsItemHovered();
-
-            // Close button — top-right corner
-            const float BtnSize = 24f;
-            const float BtnPad  = 8f;
-            var btnPos = new Vector2(imagePos.X + _surfaceW - BtnSize - BtnPad,
-                                     imagePos.Y + BtnPad);
-            ImGui.SetCursorScreenPos(btnPos);
-            ImGui.PushStyleColor(ImGuiCol.Button,        new Vector4(0f,    0f,    0f,    0.30f));
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.85f, 0.20f, 0.20f, 0.80f));
-            ImGui.PushStyleColor(ImGuiCol.ButtonActive,  new Vector4(0.85f, 0.10f, 0.10f, 1.00f));
-            ImGui.PushStyleColor(ImGuiCol.Text,          new Vector4(1f,    1f,    1f,    0.90f));
-            ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
-            if (ImGui.Button("X##close_demo", new Vector2(BtnSize, BtnSize)))
-                IsVisible = false;
-            ImGui.PopStyleColor(4);
-            ImGui.PopStyleVar();
 
             var mouse = ImGui.GetMousePos();
             float mx = mouse.X - imagePos.X;
             float my = mouse.Y - imagePos.Y;
 
-            bool overClose = mouse.X >= btnPos.X && mouse.X < btnPos.X + BtnSize
-                          && mouse.Y >= btnPos.Y && mouse.Y < btnPos.Y + BtnSize;
+            // Close button bounds — a real node now (PUI.CloseButton, icon #0005), so its
+            // own OnClick already fired during _surface.Render above; this lookup exists
+            // only to exclude its box from the drag region below.
+            var closeBtnNode = _root.FindById("btn-close");
+            bool overClose = closeBtnNode != null
+                          && _lastLayout.TryGetValue(closeBtnNode, out var closeBox)
+                          && mx >= closeBox.X && mx <= closeBox.Right
+                          && my >= closeBox.Y && my <= closeBox.Bottom;
 
             // Feature Overview button bounds
             bool overOverview = _btnNode != null
@@ -181,9 +194,181 @@ public sealed class DemoWindow : IDisposable
         root.AppendChild(BuildProgressSection());
         root.AppendChild(PUI.SectionDivider(PColor.FromHex("#FFFFFF").WithOpacity(0.05f)));
         root.AppendChild(BuildAnimatedBanner());
+        root.AppendChild(PUI.SectionDivider(PColor.FromHex("#FFFFFF").WithOpacity(0.05f)));
+        root.AppendChild(BuildRightClickSection());
+        root.AppendChild(PUI.SectionDivider(PColor.FromHex("#FFFFFF").WithOpacity(0.05f)));
+        root.AppendChild(BuildIconsSection());
         root.AppendChild(BuildOverviewButton());
 
+        // Close button — top-right corner overlay. The header above is a vertical title
+        // block with nothing else competing for the top-right corner, so an absolute
+        // overlay (rather than IconBrowserWindow's flow-appended button, which existed
+        // specifically to fix a real overlap in THAT window's horizontal header) is the
+        // right call here — same visual result, no restructuring the title block needs.
+        const float CloseBtnSize = 24f, CloseBtnPad = 8f;
+        root.AppendChild(PUI.CloseButton("btn-close", CloseBtnSize, PColor.White.WithOpacity(0.85f),
+            () => IsVisible = false).WithStyle(s =>
+        {
+            s.Position = PositionMode.Absolute;
+            s.Left = w - CloseBtnSize - CloseBtnPad;
+            s.Top  = CloseBtnPad;
+        }));
+
+        // Appended last so it draws over every sibling above (same-ZIndex nodes paint in
+        // child order) — required for an overlay regardless of how the rest of the tree
+        // is arranged. Safe to append unconditionally: PUI.ContextMenu returns an inert
+        // zero-size node while _rcMenu is closed.
+        root.AppendChild(PUI.ContextMenu(_rcMenu, PColor.FromHex("#9966FF"), new[]
+        {
+            new ContextMenuItem("Reset lock",  () => _rcLocked = false),
+            new ContextMenuItem("Reset color", () => _rcColorIndex = 0),
+            ContextMenuItem.Separator,
+            new ContextMenuItem("Open Help",   () => _help.IsVisible = true),
+            new ContextMenuItem("(disabled)",  () => { }, enabled: false),
+        }, w, h));
+
         return root;
+    }
+
+    // ── PanacheUI Icons ──────────────────────────────────────────────────────
+    // Every bundled icon, by ID only, run through PUI.Icon exactly as a consumer plugin
+    // would call it. Wrapping FlowWrap keeps this readable regardless of window width.
+
+    // A short teaser row (not the full library — that's what the browser is for) plus a
+    // button opening IconBrowserWindow: the real horizontally-scrolling, scale-adjustable
+    // view. Cramming every icon in here made the demo window tall and defeated the point
+    // of having a dedicated browser at all.
+    private Node BuildIconsSection()
+    {
+        var accent = PColor.FromHex("#6BFFB8");
+        var allIds = PanacheIcons.AllIds();
+
+        var content = new Node().WithStyle(s =>
+        {
+            s.Flow       = Flow.Vertical;
+            s.WidthMode  = SizeMode.Fill;
+            s.HeightMode = SizeMode.Fit;
+            s.Padding    = new EdgeSize(10, 14);
+            s.Gap        = 8;
+        });
+
+        content.AppendChild(PUI.SectionLabel($"PANACHE ICONS — {allIds.Count} AVAILABLE", accent));
+
+        var row = new Node().WithStyle(s =>
+        {
+            s.Flow = Flow.Horizontal;
+            s.WidthMode = SizeMode.Fill; s.HeightMode = SizeMode.Fit;
+            s.Gap = 10;
+        });
+
+        const int TeaserCount = 8;
+        for (int i = 0; i < allIds.Count && i < TeaserCount; i++)
+            row.AppendChild(PUI.Icon(allIds[i], 22f, tint: accent.WithOpacity(0.85f)));
+
+        if (allIds.Count > TeaserCount)
+            row.AppendChild(new Node().WithText($"+{allIds.Count - TeaserCount} more").WithStyle(s =>
+            {
+                s.WidthMode  = SizeMode.Fit; s.HeightMode = SizeMode.Fit;
+                s.FontSize   = 10f;
+                s.Color      = Theme.TextMuted;
+            }));
+
+        row.AppendChild(new Node().WithStyle(s => { s.WidthMode = SizeMode.Fill; s.HeightMode = SizeMode.Fit; }));
+
+        var browseBtn = PUI.PillButton("btn-browse-icons", "Browse Icons →", accent);
+        browseBtn.OnClick += _ => _openIconBrowser();
+        row.AppendChild(browseBtn);
+
+        content.AppendChild(row);
+        return PUI.SectionWrap(accent, content);
+    }
+
+    // ── Right-click demo ─────────────────────────────────────────────────────
+    // Three examples of what OnRightClick enables, matching Trist's request exactly:
+    //   1. right-click opens a context menu       → the card's own right-click
+    //   2. right-click locks/unlocks a window      → the lock pill
+    //   3. right-click cycles through colors       → the color pill
+
+    private Node BuildRightClickSection()
+    {
+        var accent = PColor.FromHex("#FFB86B");
+
+        var content = new Node().WithStyle(s =>
+        {
+            s.Flow       = Flow.Vertical;
+            s.WidthMode  = SizeMode.Fill;
+            s.HeightMode = SizeMode.Fit;
+            s.Padding    = new EdgeSize(10, 14);
+            s.Gap        = 8;
+        });
+
+        content.AppendChild(PUI.SectionLabel("RIGHT-CLICK", accent));
+
+        var row = new Node().WithStyle(s =>
+        {
+            s.Flow = Flow.Horizontal; s.WidthMode = SizeMode.Fill; s.HeightMode = SizeMode.Fit; s.Gap = 10;
+        });
+
+        // 1. Lock / unlock toggle.
+        var lockPill = new Node().WithId("rc-lock").WithText(_rcLocked ? "🔒 Locked" : "🔓 Unlocked").WithStyle(s =>
+        {
+            s.WidthMode       = SizeMode.Fill;
+            s.HeightMode      = SizeMode.Fit;
+            s.BackgroundColor = (_rcLocked ? PColor.FromHex("#DD6B6B") : accent).WithOpacity(0.16f);
+            s.BorderColor     = (_rcLocked ? PColor.FromHex("#DD6B6B") : accent).WithOpacity(0.55f);
+            s.BorderWidth     = 1;
+            s.BorderRadius    = 6;
+            s.Padding         = new EdgeSize(8, 10);
+            s.FontSize        = 11f;
+            s.Bold            = true;
+            s.Color           = PColor.White.WithOpacity(0.92f);
+            s.TextAlign       = TextAlign.Center;
+        });
+        lockPill.IsInteractive = true;
+        lockPill.OnRightClick += (_, _, _) => _rcLocked = !_rcLocked;
+        row.AppendChild(lockPill);
+
+        // 2. Color cycle.
+        var cycleColor = RightClickCycleColors[_rcColorIndex % RightClickCycleColors.Length];
+        var colorPill = new Node().WithId("rc-color").WithText("Right-click to cycle").WithStyle(s =>
+        {
+            s.WidthMode       = SizeMode.Fill;
+            s.HeightMode      = SizeMode.Fit;
+            s.BackgroundColor = cycleColor.WithOpacity(0.20f);
+            s.BorderColor     = cycleColor.WithOpacity(0.65f);
+            s.BorderWidth     = 1;
+            s.BorderRadius    = 6;
+            s.Padding         = new EdgeSize(8, 10);
+            s.FontSize        = 11f;
+            s.Bold            = true;
+            s.Color           = cycleColor;
+            s.TextAlign       = TextAlign.Center;
+        });
+        colorPill.IsInteractive = true;
+        colorPill.OnRightClick += (_, _, _) => _rcColorIndex = (_rcColorIndex + 1) % RightClickCycleColors.Length;
+        row.AppendChild(colorPill);
+
+        // 3. Context menu.
+        var menuPill = new Node().WithId("rc-menu").WithText("Right-click for menu").WithStyle(s =>
+        {
+            s.WidthMode       = SizeMode.Fill;
+            s.HeightMode      = SizeMode.Fit;
+            s.BackgroundColor = accent.WithOpacity(0.16f);
+            s.BorderColor     = accent.WithOpacity(0.55f);
+            s.BorderWidth     = 1;
+            s.BorderRadius    = 6;
+            s.Padding         = new EdgeSize(8, 10);
+            s.FontSize        = 11f;
+            s.Bold            = true;
+            s.Color           = PColor.White.WithOpacity(0.92f);
+            s.TextAlign       = TextAlign.Center;
+        });
+        menuPill.IsInteractive = true;
+        menuPill.OnRightClick += (_, x, y) => _rcMenu.Open(x, y, tag: "rc-menu");
+        row.AppendChild(menuPill);
+
+        content.AppendChild(row);
+        return PUI.SectionWrap(accent, content);
     }
 
     // ── Sections ─────────────────────────────────────────────────────────────
@@ -509,9 +694,7 @@ public sealed class DemoWindow : IDisposable
 
     public void Dispose()
     {
+        // PanacheSurface owns the layout engine, renderer and texture manager.
         _surface.Dispose();
-        _textures.Dispose();
-        _layout.Dispose();
-        _renderer.Dispose();
     }
 }

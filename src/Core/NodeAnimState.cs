@@ -11,6 +11,11 @@ public class NodeAnimState
     public bool  IsHovered { get; set; }
     public bool  IsPressed { get; set; }
 
+    /// <summary>True while the secondary (right) mouse button is held over this node.
+    /// Mirrors <see cref="IsPressed"/> for the right button — no eased spring counterpart
+    /// exists (nothing in SkiaRenderer reads one), so this is the flag only.</summary>
+    public bool  IsRightPressed { get; set; }
+
     // ── Ripple ───────────────────────────────────────────────────────────────
 
     public float RippleRadius { get; set; }
@@ -39,6 +44,14 @@ public class NodeAnimState
 
     /// <summary>Total natural height of children. Set by LayoutEngine when OverflowY.Scroll.</summary>
     public float ScrollContentH { get; set; }
+
+    // ── Scroll (OverflowX.Scroll nodes) ──────────────────────────────────────
+
+    /// <summary>Current horizontal scroll position in pixels. OverflowY's counterpart.</summary>
+    public float ScrollOffsetX  { get; set; }
+
+    /// <summary>Total natural width of children. Set by LayoutEngine when OverflowX.Scroll.</summary>
+    public float ScrollContentW { get; set; }
 
     // ── One-shot triggered effect ─────────────────────────────────────────────
 
@@ -95,15 +108,28 @@ public class NodeAnimState
     /// <summary>Update all time-based state. Call once per frame with delta time in seconds.</summary>
     public void Update(float dt)
     {
-        // Hover lerp
-        HoverT = IsHovered
-            ? System.Math.Min(1f, HoverT + dt * 8f)
-            : System.Math.Max(0f, HoverT - dt * 6f);
+        if (dt <= 0f)
+        {
+            // No frame delta supplied. Plenty of callers never pass one — Render's dt
+            // parameter defaults to 0 — and easing towards a target at zero speed would
+            // leave HoverT pinned at 0 forever, so a node relying on Style.HoverBackgroundColor
+            // would simply never light up. Snap to the target instead: no time information
+            // means no interpolation, not no state.
+            HoverT = IsHovered ? 1f : 0f;
+            PressT = IsPressed ? 1f : 0f;
+        }
+        else
+        {
+            // Hover lerp
+            HoverT = IsHovered
+                ? System.Math.Min(1f, HoverT + dt * 8f)
+                : System.Math.Max(0f, HoverT - dt * 6f);
 
-        // Press spring
-        PressT = IsPressed
-            ? System.Math.Min(1f, PressT + dt * 16f)
-            : System.Math.Max(0f, PressT - dt * 10f);
+            // Press spring
+            PressT = IsPressed
+                ? System.Math.Min(1f, PressT + dt * 16f)
+                : System.Math.Max(0f, PressT - dt * 10f);
+        }
 
         // Ripple expand
         if (RippleAlpha > 0f)
@@ -124,15 +150,14 @@ public class NodeAnimState
             EntranceT = System.Math.Min(1f, EntranceT + dt * 3f);
         }
 
-        // Shake
+        // Shake — value noise from the timer rather than two throwaway System.Random
+        // instances per frame. Same seeds, same deterministic wobble, no allocation.
         if (ShakeTimer > 0f)
         {
             ShakeTimer -= dt;
             float progress = ShakeTimer / ShakeDuration;
-            float r = (float)(new System.Random((int)(ShakeTimer * 1000)).NextDouble() * 2 - 1);
-            ShakeOffsetX = r * ShakeIntensity * progress;
-            r = (float)(new System.Random((int)(ShakeTimer * 997 + 1)).NextDouble() * 2 - 1);
-            ShakeOffsetY = r * ShakeIntensity * progress;
+            ShakeOffsetX = SignedNoise((int)(ShakeTimer * 1000))     * ShakeIntensity * progress;
+            ShakeOffsetY = SignedNoise((int)(ShakeTimer * 997 + 1))  * ShakeIntensity * progress;
         }
         else { ShakeOffsetX = 0; ShakeOffsetY = 0; }
 
@@ -159,5 +184,15 @@ public class NodeAnimState
 
         // Flip
         FlipT = System.Math.Min(1f, FlipT + dt * 3f);
+    }
+
+    /// <summary>Deterministic hash noise in [-1, 1] — the shake's random source.</summary>
+    private static float SignedNoise(int seed)
+    {
+        uint h = (uint)seed * 2654435761u;
+        h ^= h >> 15;
+        h *= 2246822519u;
+        h ^= h >> 13;
+        return (h & 0xFFFFFF) / 8388608f - 1f;   // [0, 2) − 1 → [-1, 1)
     }
 }

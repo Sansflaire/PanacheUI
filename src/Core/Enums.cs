@@ -31,6 +31,39 @@ public enum TextOverflow
 {
     Clip,
     Ellipsis,
+
+    /// <summary>
+    /// Break the text onto as many lines as it needs. Wrapping happens on whitespace,
+    /// with over-long single words hard-broken mid-word; embedded <c>\n</c> is always a
+    /// hard break. A <see cref="SizeMode.Fit"/> height reports the <i>wrapped</i> height,
+    /// so a node using this grows to hold its text instead of clipping it.
+    /// </summary>
+    /// <remarks>
+    /// Combine with <see cref="Style.MaxLines"/> to cap the block and ellipsize the last
+    /// kept line. See <see cref="Style.TextOverflow"/> for the layout consequences.
+    /// </remarks>
+    Wrap,
+}
+
+/// <summary>
+/// Cross-axis alignment of a node's flow children — the axis <i>perpendicular</i> to
+/// <see cref="Flow"/>. Horizontal flow aligns children vertically; vertical flow aligns
+/// them horizontally.
+/// </summary>
+/// <remarks>
+/// Only affects children that are <i>not</i> <see cref="SizeMode.Fill"/> on the cross
+/// axis — a Fill child already consumes the whole cross extent, so there is nothing left
+/// to align. <see cref="Start"/> is the default and is exactly what this engine did
+/// before the property existed.
+/// </remarks>
+public enum AlignItems
+{
+    /// <summary>Children sit at the top (horizontal flow) / left (vertical flow).</summary>
+    Start,
+    /// <summary>Children are centred on the cross axis.</summary>
+    Center,
+    /// <summary>Children sit at the bottom (horizontal flow) / right (vertical flow).</summary>
+    End,
 }
 
 /// <summary>Position mode — controls whether a node participates in normal flow layout.</summary>

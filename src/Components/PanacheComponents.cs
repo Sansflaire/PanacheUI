@@ -1,3 +1,5 @@
+using System;
+using System.Globalization;
 using PanacheUI.Core;
 using PanacheUI.Theming;
 
@@ -37,7 +39,7 @@ public static class Theme
 ///   • No BorderRadius on full-width strips; only inset elements get radius
 ///   • No drop shadows on sections; depth from Panel/Panel2 color shift only
 /// </summary>
-public static class PUI
+public static partial class PUI
 {
     /// <summary>
     /// Wraps <paramref name="content"/> in an Umbra-style section panel:
@@ -149,6 +151,157 @@ public static class PUI
             s.Bold                  = true;
             s.Color                 = accent.WithOpacity(0.95f);
         });
+
+    // ── Sliders ─────────────────────────────────────────────────────────────
+    //
+    // Native Panache sliders. These supersede the old "put ImGui.SliderFloat in a
+    // strip below the surface" workaround — that does not scale to a panel with
+    // dozens of values, and it breaks the rule that everything visible is a node.
+    //
+    // Drag handling relies on Node.CapturesDrag: the outer node grabs the pointer on
+    // press and keeps receiving OnDrag until release, so the knob still tracks the
+    // cursor when it wanders off the track. Track/fill/knob are PointerEvents.None so
+    // every event lands on the outer node.
+
+    /// <summary>Default slider track width in pixels.</summary>
+    public const float SliderWidth = 150f;
+    /// <summary>Default slider row height in pixels — also the pointer target height.</summary>
+    public const float SliderHeight = 16f;
+
+    private const float SliderTrackH = 4f;
+    private const float SliderKnobD  = 11f;
+
+    /// <summary>
+    /// A bare horizontal slider. <paramref name="onChange"/> fires on every drag frame with
+    /// the new value, already mapped into [<paramref name="min"/>, <paramref name="max"/>]
+    /// and clamped.
+    ///
+    /// Set <paramref name="step"/> above 0 to quantise (e.g. 1f for integers).
+    /// </summary>
+    public static Node Slider(
+        string id, float value, float min, float max, PColor accent,
+        Action<float>? onChange = null,
+        float width  = SliderWidth,
+        float height = SliderHeight,
+        float step   = 0f)
+    {
+        float span = max - min;
+        float frac = span > 0f ? Math.Clamp((value - min) / span, 0f, 1f) : 0f;
+
+        // Knob centre travels from knobR to width-knobR, so the usable travel is width-knobD.
+        float knobR  = SliderKnobD * 0.5f;
+        float travel = Math.Max(1f, width - SliderKnobD);
+        float centre = knobR + frac * travel;
+
+        var track = new Node().WithStyle(s =>
+        {
+            s.Position        = PositionMode.Absolute;
+            s.Left            = 0;
+            s.Top             = (height - SliderTrackH) * 0.5f;
+            s.WidthMode       = SizeMode.Fixed; s.Width  = width;
+            s.HeightMode      = SizeMode.Fixed; s.Height = SliderTrackH;
+            s.BackgroundColor = accent.WithOpacity(0.14f);
+            s.BorderRadius    = SliderTrackH * 0.5f;
+            s.PointerEvents   = PointerEvents.None;
+        });
+
+        var fill = new Node().WithStyle(s =>
+        {
+            s.Position        = PositionMode.Absolute;
+            s.Left            = 0;
+            s.Top             = (height - SliderTrackH) * 0.5f;
+            s.WidthMode       = SizeMode.Fixed; s.Width  = centre;
+            s.HeightMode      = SizeMode.Fixed; s.Height = SliderTrackH;
+            s.BackgroundColor = accent.WithOpacity(0.70f);
+            s.BorderRadius    = SliderTrackH * 0.5f;
+            s.PointerEvents   = PointerEvents.None;
+        });
+
+        var knob = new Node().WithStyle(s =>
+        {
+            s.Position        = PositionMode.Absolute;
+            s.Left            = centre - knobR;
+            s.Top             = (height - SliderKnobD) * 0.5f;
+            s.WidthMode       = SizeMode.Fixed; s.Width  = SliderKnobD;
+            s.HeightMode      = SizeMode.Fixed; s.Height = SliderKnobD;
+            s.BackgroundColor = accent.WithOpacity(0.95f);
+            s.BorderRadius    = knobR;
+            s.BorderColor     = PColor.White.WithOpacity(0.30f);
+            s.BorderWidth     = 1;
+            s.PointerEvents   = PointerEvents.None;
+        });
+
+        var outer = new Node().WithId(id).WithStyle(s =>
+        {
+            s.WidthMode  = SizeMode.Fixed; s.Width  = width;
+            s.HeightMode = SizeMode.Fixed; s.Height = height;
+            s.Flow       = Flow.Horizontal;
+        });
+        outer.IsInteractive = true;
+        outer.CapturesDrag  = true;
+        outer.AppendChild(track);
+        outer.AppendChild(fill);
+        outer.AppendChild(knob);
+
+        if (onChange != null)
+        {
+            outer.OnDrag += (_, localX, _) =>
+            {
+                float t = Math.Clamp((localX - knobR) / travel, 0f, 1f);
+                float v = min + t * span;
+                if (step > 0f) v = MathF.Round(v / step) * step;
+                onChange(Math.Clamp(v, min, max));
+            };
+        }
+
+        return outer;
+    }
+
+    /// <summary>
+    /// A labelled slider row: name on the left, slider in the middle, formatted value on the
+    /// right. This is the workhorse for property panels — one call per editable float.
+    /// </summary>
+    public static Node SliderRow(
+        string id, string label, float value, float min, float max, PColor accent,
+        Action<float>? onChange = null,
+        string format      = "0.###",
+        float  labelWidth  = 108f,
+        float  valueWidth  = 46f,
+        float  sliderWidth = SliderWidth,
+        float  step        = 0f)
+    {
+        var labelNode = new Node().WithText(label).WithStyle(s =>
+        {
+            s.WidthMode     = SizeMode.Fixed; s.Width = labelWidth;
+            s.HeightMode    = SizeMode.Fit;
+            s.FontSize      = 10.5f;
+            s.Color         = Theme.TextMuted;
+            s.TextOverflow  = TextOverflow.Ellipsis;
+            s.PointerEvents = PointerEvents.None;
+        });
+
+        var valueNode = new Node().WithText(value.ToString(format, CultureInfo.InvariantCulture)).WithStyle(s =>
+        {
+            s.WidthMode     = SizeMode.Fixed; s.Width = valueWidth;
+            s.HeightMode    = SizeMode.Fit;
+            s.FontSize      = 10.5f;
+            s.Bold          = true;
+            s.Color         = accent.WithOpacity(0.95f);
+            s.TextAlign     = TextAlign.Right;
+            s.PointerEvents = PointerEvents.None;
+        });
+
+        return new Node().WithId(id + "_row").WithStyle(s =>
+        {
+            s.Flow       = Flow.Horizontal;
+            s.WidthMode  = SizeMode.Fill;
+            s.HeightMode = SizeMode.Fixed; s.Height = SliderHeight + 4f;
+            s.Gap        = 8;
+        }).WithChildren(
+            labelNode,
+            Slider(id, value, min, max, accent, onChange, sliderWidth, SliderHeight, step),
+            valueNode);
+    }
 
     /// <summary>
     /// Creates a root node that fills a fixed w×h surface using PanacheUI base theme.

@@ -59,4 +59,26 @@ Check off each item when: code implemented + HelpWindow page added + build clean
 
 ---
 
-*Last updated: features 03-30 — all 30 features complete*
+## Framework Capabilities (consumer-facing, beyond the 30 effects)
+
+Raised from the 2026-08-24 sweep of what consuming plugins were having to work around.
+Each of these deletes a category of per-plugin boilerplate.
+
+- [x] **Text measurement** — `PUI.MeasureText` / `MeasureLineHeight` / `MeasureWrappedHeight`
+      / `WrapText`. Ends the era of invented "average glyph width" constants.
+- [x] **Real word wrap** — `TextOverflow.Wrap` + `Style.MaxLines`, with a `Fit` height
+      reporting the *wrapped* height. `PUI.Paragraph` is the one-call form.
+- [x] **Surface UI scale** — `PanacheSurface.Scale`, scaling the layout (not the bitmap)
+      and dividing mouse input to match.
+- [x] **Cross-axis alignment** — `Style.AlignItems` + `Style.AlignSelf`.
+- [x] **Framework-painted hover** — `Style.Hover*` colors cross-faded by the renderer.
+- [x] **Text input** — `PUI.TextInput` / `TextInputRow` + Id-keyed keyboard focus.
+      ⚠️ Visuals verified; live keystroke routing still needs an in-game check.
+- [x] **Icon set documentation** — [`ICONS.md`](ICONS.md) with a committed contact sheet
+      and a unique name per ID.
+- [ ] **Main-axis distribution** — `Style.JustifyContent`. See
+      [`DEFERRED_FEATURES.md`](DEFERRED_FEATURES.md) #4.
+
+---
+
+*Last updated: 2026-08-24 — all 30 effects complete; framework capability sweep added.*

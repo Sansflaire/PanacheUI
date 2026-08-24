@@ -30,14 +30,24 @@ public class SkiaRenderer : IDisposable
     private readonly SKPaint _stroke = new() { IsAntialias = true, Style = SKPaintStyle.Stroke };
     private readonly SKPaint _text   = new() { IsAntialias = true, Style = SKPaintStyle.Fill, StrokeJoin = SKStrokeJoin.Round };
 
-    // Cached typefaces — FromFamilyName allocates a native object; creating one per text draw call leaks.
-    private readonly SKTypeface _typefaceBold =
-        SKTypeface.FromFamilyName(null, SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright);
-    private readonly SKTypeface _typefaceItalic =
-        SKTypeface.FromFamilyName(null, SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Italic);
+    // Reused for the opacity / entrance SaveLayer, which otherwise allocated and disposed
+    // a native SKPaint for every translucent node, every frame.
+    private readonly SKPaint _layer  = new();
 
     // Reused pixel buffer for the Voronoi effect (64×64×4 = 16 KB); avoids a per-frame allocation.
     private readonly byte[] _voronoiPixels = new byte[64 * 64 * 4];
+
+    // Scratch buffer for ZIndex-ordered child drawing — see DrawNode. Reused across nodes
+    // and frames; the recursion depth-slices it rather than allocating per node.
+    private Node[] _zSort = new Node[16];
+
+    /// <summary>
+    /// Diagnostic switch: set false to paint every node regardless of whether it lies
+    /// outside the current clip. Culling is an optimisation only — with it off the
+    /// output must be pixel-identical, just slower. Flip this if a node ever goes
+    /// missing and you need to know whether culling is to blame.
+    /// </summary>
+    internal static bool CullOffscreenNodes = true;
 
     /// <summary>Draw the entire node tree onto <paramref name="canvas"/>.</summary>
     /// <param name="time">Elapsed seconds — drives all animated effects.</param>
@@ -53,13 +63,36 @@ public class SkiaRenderer : IDisposable
 
         Style s    = node.Style;
         var rect   = box.ToSkRect();
+
+        // ── Off-screen culling ────────────────────────────────────────────────
+        // QuickReject tests the rect against the canvas's current matrix and clip, so
+        // inside a scroll container (clipped viewport + scroll translate) this discards
+        // every row scrolled out of view before a single paint call is issued. A node
+        // that clips its own content is safe to discard wholesale — nothing it contains
+        // can paint outside the rect we just rejected. A childless node is safe for the
+        // same reason. Anything else may still have children escaping its box, so only
+        // the subtree walk continues; see selfVisible below.
+        bool clipsChildren = s.ClipContent || s.OverflowY == OverflowMode.Scroll
+                                            || s.OverflowX == OverflowMode.Scroll || s.ClipPath != null;
+        bool selfVisible   = !CullOffscreenNodes || !canvas.QuickReject(InfluenceRect(rect, s));
+        if (!selfVisible && (clipsChildren || node.Children.Count == 0)) return;
+
+        bool hasEffects = s.Effects.Count > 0;
+        var  anim       = node.AnimOrNull;
+
+        // ── Hover cross-fade ──────────────────────────────────────────────────
+        // Resolved once here and used by the background, border and text steps below, so
+        // a consumer gets the mandatory hover cue from Style alone — no per-row
+        // OnMouseEnter handler, no _hoverId field, no frame of lag.
+        float hoverT = s.HasHoverStyle ? anim?.HoverT ?? 0f : 0f;
+
         int saveCount = canvas.Save();
         try
         {
 
         // ── Interaction-driven transforms ─────────────────────────────────────
 
-        if (HasEffect(s, NodeEffect.Shake))
+        if (hasEffects && HasEffect(s, NodeEffect.Shake))
         {
             float period = 2.5f / MathF.Max(0.1f, s.EffectSpeed);
             float phase  = (time / period) % 1f;
@@ -71,29 +104,29 @@ public class SkiaRenderer : IDisposable
                 float oy    = MathF.Sin(time * 61.7f + 1.3f) * amp * 0.55f;
                 canvas.Translate(ox, oy);
             }
-            else if (node.Anim.ShakeOffsetX != 0f || node.Anim.ShakeOffsetY != 0f)
+            else if (anim != null && (anim.ShakeOffsetX != 0f || anim.ShakeOffsetY != 0f))
             {
-                canvas.Translate(node.Anim.ShakeOffsetX, node.Anim.ShakeOffsetY);
+                canvas.Translate(anim.ShakeOffsetX, anim.ShakeOffsetY);
             }
         }
 
-        if (HasEffect(s, NodeEffect.HoverLift) && node.Anim.HoverT > 0f)
+        if (hasEffects && anim is { HoverT: > 0f } && HasEffect(s, NodeEffect.HoverLift))
         {
-            float scale = 1f + node.Anim.HoverT * 0.04f;
+            float scale = 1f + anim.HoverT * 0.04f;
             canvas.Translate(rect.MidX, rect.MidY);
             canvas.Scale(scale, scale);
             canvas.Translate(-rect.MidX, -rect.MidY);
         }
 
-        if (HasEffect(s, NodeEffect.PressDepress) && node.Anim.PressT > 0f)
+        if (hasEffects && anim is { PressT: > 0f } && HasEffect(s, NodeEffect.PressDepress))
         {
-            float shrink = 1f - node.Anim.PressT * 0.04f;
+            float shrink = 1f - anim.PressT * 0.04f;
             canvas.Translate(rect.MidX, rect.MidY);
             canvas.Scale(shrink, shrink);
             canvas.Translate(-rect.MidX, -rect.MidY);
         }
 
-        if (HasEffect(s, NodeEffect.SlideTransition))
+        if (hasEffects && HasEffect(s, NodeEffect.SlideTransition))
         {
             float period  = 3.2f / MathF.Max(0.1f, s.EffectSpeed);
             float t       = (time / period) % 1f;
@@ -107,7 +140,7 @@ public class SkiaRenderer : IDisposable
             canvas.Translate(offset, 0);
         }
 
-        if (HasEffect(s, NodeEffect.CardFlip))
+        if (hasEffects && HasEffect(s, NodeEffect.CardFlip))
         {
             float period = 2.4f / MathF.Max(0.1f, s.EffectSpeed);
             float t      = (time / period) % 1f;
@@ -116,29 +149,27 @@ public class SkiaRenderer : IDisposable
             canvas.Scale(scaleX, 1f, rect.MidX, rect.MidY);
         }
 
-        if (HasEffect(s, NodeEffect.StaggeredEntrance))
+        if (hasEffects && HasEffect(s, NodeEffect.StaggeredEntrance))
         {
-            float et = node.Anim.EntranceT;
+            float et = anim?.EntranceT ?? 0f;
             float slideOffset = (1f - et) * 20f;
             canvas.Translate(0, slideOffset);
             if (et < 1f)
             {
-                var opPaint = new SKPaint { Color = new SKColor(255, 255, 255, (byte)(et * 255)) };
-                canvas.SaveLayer(opPaint);
-                opPaint.Dispose();
+                _layer.Color = new SKColor(255, 255, 255, (byte)(et * 255));
+                canvas.SaveLayer(_layer);
             }
         }
 
         // Opacity layer
         if (s.Opacity < 1f)
         {
-            var paint = new SKPaint { Color = new SKColor(255, 255, 255, (byte)(s.Opacity * 255)) };
-            canvas.SaveLayer(paint);
-            paint.Dispose();
+            _layer.Color = new SKColor(255, 255, 255, (byte)(s.Opacity * 255));
+            canvas.SaveLayer(_layer);
         }
 
         // ── 1. Drop shadow ────────────────────────────────────────────────────
-        if (s.ShadowColor.HasValue && s.ShadowBlur > 0)
+        if (selfVisible && s.ShadowColor.HasValue && s.ShadowBlur > 0)
         {
             // Use MaskFilter (alpha-only blur) instead of ImageFilter to avoid premultiplied-alpha
             // black fringing: ImageFilter.CreateBlur interpolates RGB channels with transparent
@@ -156,13 +187,37 @@ public class SkiaRenderer : IDisposable
         }
 
         // ── 2. Background ─────────────────────────────────────────────────────
-        if (s.BackgroundColor.HasValue)
+        PColor? bgColor = s.BackgroundColor;
+        PColor? bgEnd   = s.BackgroundGradientEnd;
+        if (hoverT > 0f && s.HoverBackgroundColor.HasValue)
+        {
+            var target = s.HoverBackgroundColor.Value;
+            // A node with no base background fades up from that same color at zero alpha,
+            // rather than from Transparent — fading through black is not what "no
+            // background yet" should look like.
+            bgColor = PColor.Lerp(bgColor ?? target.WithAlpha(0), target, hoverT);
+
+            if (s.HoverBackgroundGradientEnd.HasValue)
+            {
+                var endTarget = s.HoverBackgroundGradientEnd.Value;
+                bgEnd = PColor.Lerp(bgEnd ?? endTarget.WithAlpha(0), endTarget, hoverT);
+            }
+            else if (bgEnd.HasValue)
+            {
+                // Base is a gradient but only one hover color was given: carry the far stop
+                // along towards it too, so the gradient brightens as a whole instead of
+                // lighting only its start and pinching at the other end.
+                bgEnd = PColor.Lerp(bgEnd.Value, target, hoverT);
+            }
+        }
+
+        if (selfVisible && bgColor.HasValue)
         {
             // Hold shader reference outside the if/else so it outlives the block.
             // Using `using var` inside a nested if block would dispose the shader
             // before DrawShape is called, leaving the paint holding a dead C# wrapper.
             SKShader? bgShader = null;
-            if (s.BackgroundGradientEnd.HasValue)
+            if (bgEnd.HasValue)
             {
                 if (s.BackgroundGradientRadial)
                 {
@@ -171,7 +226,7 @@ public class SkiaRenderer : IDisposable
                     float radius = MathF.Max(rect.Width, rect.Height) * 0.7071f; // half-diagonal
                     bgShader = SKShader.CreateRadialGradient(
                         new SKPoint(cx, cy), radius,
-                        new[] { (SKColor)s.BackgroundColor.Value, (SKColor)s.BackgroundGradientEnd.Value },
+                        new[] { (SKColor)bgColor.Value, (SKColor)bgEnd.Value },
                         SKShaderTileMode.Clamp);
                 }
                 else
@@ -182,14 +237,14 @@ public class SkiaRenderer : IDisposable
                         ? new SKPoint(rect.Right, rect.MidY) : new SKPoint(rect.MidX, rect.Bottom);
                     bgShader = SKShader.CreateLinearGradient(
                         startPt, endPt,
-                        new[] { (SKColor)s.BackgroundColor.Value, (SKColor)s.BackgroundGradientEnd.Value },
+                        new[] { (SKColor)bgColor.Value, (SKColor)bgEnd.Value },
                         SKShaderTileMode.Clamp);
                 }
                 _fill.Shader = bgShader;
             }
             else
             {
-                _fill.Color  = s.BackgroundColor.Value;
+                _fill.Color  = bgColor.Value;
                 _fill.Shader = null;
             }
 
@@ -199,7 +254,7 @@ public class SkiaRenderer : IDisposable
         }
 
         // ── 3. Image bitmap ───────────────────────────────────────────────────
-        if (s.ImageBitmap != null)
+        if (selfVisible && s.ImageBitmap != null)
         {
             int imgSave = canvas.Save();
             ClipToShape(canvas, rect, s);
@@ -211,15 +266,24 @@ public class SkiaRenderer : IDisposable
         }
 
         // ── 4. Border ─────────────────────────────────────────────────────────
-        if (s.BorderColor.HasValue && s.BorderWidth > 0)
+        // HoverBorderColor still needs a non-zero BorderWidth to paint — the hover style
+        // changes the border's color, it does not conjure one out of nothing.
+        PColor? borderColor = s.BorderColor;
+        if (hoverT > 0f && s.HoverBorderColor.HasValue)
         {
-            _stroke.Color       = s.BorderColor.Value;
+            var target = s.HoverBorderColor.Value;
+            borderColor = PColor.Lerp(borderColor ?? target.WithAlpha(0), target, hoverT);
+        }
+
+        if (selfVisible && borderColor.HasValue && s.BorderWidth > 0)
+        {
+            _stroke.Color       = borderColor.Value;
             _stroke.StrokeWidth = s.BorderWidth;
             DrawShape(canvas, rect, s, _stroke);
         }
 
         // ── 5. Clip ───────────────────────────────────────────────────────────
-        bool needsClip = s.ClipContent || s.OverflowY == OverflowMode.Scroll || s.ClipPath != null;
+        bool needsClip = clipsChildren;
         if (needsClip)
         {
             ClipToShape(canvas, rect, s);
@@ -235,17 +299,35 @@ public class SkiaRenderer : IDisposable
         }
 
         // ── Scroll translate ──────────────────────────────────────────────────
-        if (s.OverflowY == OverflowMode.Scroll && node.Anim.ScrollOffsetY != 0f)
-            canvas.Translate(0, -node.Anim.ScrollOffsetY);
+        if (anim != null)
+        {
+            float tx = s.OverflowX == OverflowMode.Scroll ? -anim.ScrollOffsetX : 0f;
+            float ty = s.OverflowY == OverflowMode.Scroll ? -anim.ScrollOffsetY : 0f;
+            if (tx != 0f || ty != 0f) canvas.Translate(tx, ty);
+        }
 
         // ── 6. Effects ────────────────────────────────────────────────────────
-        if (s.Effects.Count > 0)
+        if (selfVisible && hasEffects)
             DrawEffects(canvas, s, node, box, rect, time);
 
         // ── 7. Text ───────────────────────────────────────────────────────────
-        if (!string.IsNullOrEmpty(node.NodeValue))
+        if (selfVisible && !string.IsNullOrEmpty(node.NodeValue))
         {
-            if (HasEffect(s, NodeEffect.TypewriterText))
+            PColor? textColor = s.Color;
+            if (hoverT > 0f && s.HoverColor.HasValue)
+            {
+                var hoverTarget = s.HoverColor.Value;
+                textColor = PColor.Lerp(textColor ?? hoverTarget.WithAlpha(0), hoverTarget, hoverT);
+            }
+
+            if (s.TextOverflow == TextOverflow.Wrap)
+            {
+                // Multi-line: the block is laid out by TextLayout, the same call the layout
+                // engine already made this frame with the same arguments, so this is a cache
+                // hit and the painted lines are exactly the ones the box was sized for.
+                DrawWrappedText(canvas, node.NodeValue!, box, s, textColor);
+            }
+            else if (hasEffects && HasEffect(s, NodeEffect.TypewriterText))
             {
                 string full = node.NodeValue!;
                 float charsPerSec = s.EffectSpeed * 12f;
@@ -253,50 +335,64 @@ public class SkiaRenderer : IDisposable
                 float cycleTime   = time % totalCycle;
                 int   visible     = System.Math.Min(full.Length, (int)(cycleTime * charsPerSec));
                 bool  cursor      = (time * 2f % 1f) < 0.5f && visible < full.Length;
-                DrawText(canvas, full[..visible] + (cursor ? "|" : ""), box, s);
+                DrawText(canvas, full[..visible] + (cursor ? "|" : ""), box, s, textColor);
             }
-            else if (HasEffect(s, NodeEffect.RollingCounter)
+            else if (hasEffects && HasEffect(s, NodeEffect.RollingCounter)
                      && float.TryParse(node.NodeValue, out float target))
             {
                 float period   = 4f / MathF.Max(0.01f, s.EffectSpeed);
                 float cycleT   = (time % period) / period;
                 float t        = cycleT < 0.8f ? EaseOutCubic(cycleT / 0.8f) : 1f;
                 float displayed = target * t;
-                DrawText(canvas, ((int)displayed).ToString("N0"), box, s);
+                DrawText(canvas, ((int)displayed).ToString("N0"), box, s, textColor);
             }
-            else if (HasEffect(s, NodeEffect.TextWave))
+            else if (hasEffects && HasEffect(s, NodeEffect.TextWave))
             {
-                DrawTextWave(canvas, node.NodeValue!, box, s, time);
+                DrawTextWave(canvas, node.NodeValue!, box, s, time, textColor);
             }
             else
             {
-                DrawText(canvas, node.NodeValue!, box, s);
+                DrawText(canvas, node.NodeValue!, box, s, textColor);
             }
         }
 
         // ── 8. Children (ZIndex-sorted) ───────────────────────────────────────
-        var children = node.Children;
+        var children  = node.Children;
+        int childCount = children.Count;
         bool needsSort = false;
-        foreach (var child in children)
-            if (child.Style.ZIndex != 0) { needsSort = true; break; }
+        for (int i = 0; i < childCount; i++)
+            if (children[i].Style.ZIndex != 0) { needsSort = true; break; }
 
         if (needsSort)
         {
-            var sorted = children
-                .Select((c, i) => (child: c, idx: i))
-                .OrderBy(x => x.child.Style.ZIndex)
-                .ThenBy(x => x.idx);
-            foreach (var (child, _) in sorted)
-                DrawNode(canvas, child, layout, time);
+            // Stable insertion sort into a scratch slice. The old LINQ
+            // Select/OrderBy/ThenBy chain allocated an index tuple per child plus
+            // iterators and a sort buffer on every frame a z-indexed node was drawn.
+            int start = RentZSlice(childCount);
+            for (int i = 0; i < childCount; i++)
+            {
+                var child = children[i];
+                int z = child.Style.ZIndex;
+                int j = start + i - 1;
+                while (j >= start && _zSort[j].Style.ZIndex > z)
+                {
+                    _zSort[j + 1] = _zSort[j];
+                    j--;
+                }
+                _zSort[j + 1] = child;
+            }
+            for (int i = 0; i < childCount; i++)
+                DrawNode(canvas, _zSort[start + i], layout, time);
+            ReturnZSlice(childCount);
         }
         else
         {
-            foreach (var child in children)
-                DrawNode(canvas, child, layout, time);
+            for (int i = 0; i < childCount; i++)
+                DrawNode(canvas, children[i], layout, time);
         }
 
         // ── 9. Ripple overlay ─────────────────────────────────────────────────
-        if (HasEffect(s, NodeEffect.Ripple) && node.Anim.RippleAlpha > 0f)
+        if (selfVisible && hasEffects && anim is { RippleAlpha: > 0f } && HasEffect(s, NodeEffect.Ripple))
         {
             int ripSave = canvas.Save();
             ClipToShape(canvas, rect, s);
@@ -307,21 +403,21 @@ public class SkiaRenderer : IDisposable
                 StrokeWidth = 2f,
                 Color       = new SKColor(
                     s.EffectColor1.R, s.EffectColor1.G, s.EffectColor1.B,
-                    (byte)(node.Anim.RippleAlpha * 200f)),
+                    (byte)(anim.RippleAlpha * 200f)),
             };
             canvas.DrawCircle(
-                rect.Left + node.Anim.RippleX,
-                rect.Top  + node.Anim.RippleY,
-                node.Anim.RippleRadius, ripPaint);
+                rect.Left + anim.RippleX,
+                rect.Top  + anim.RippleY,
+                anim.RippleRadius, ripPaint);
             canvas.RestoreToCount(ripSave);
         }
 
         // ── 10. One-shot flash effect ──────────────────────────────────────────
-        if (node.Anim.FlashEffect != NodeEffect.None && node.Anim.FlashT > 0f)
+        if (selfVisible && anim is { FlashT: > 0f } && anim.FlashEffect != NodeEffect.None)
         {
             float saved = s.EffectIntensity;
-            s.EffectIntensity *= node.Anim.FlashT;
-            DrawSingleEffect(canvas, node.Anim.FlashEffect, s, node, box, rect, time);
+            s.EffectIntensity *= anim.FlashT;
+            DrawSingleEffect(canvas, anim.FlashEffect, s, node, box, rect, time);
             s.EffectIntensity = saved;
         }
 
@@ -331,6 +427,50 @@ public class SkiaRenderer : IDisposable
             canvas.RestoreToCount(saveCount);
         }
     }
+
+    // ── Culling / scratch helpers ─────────────────────────────────────────────
+
+    /// <summary>
+    /// The rect a node can actually paint into: its box, grown by whatever its style
+    /// bleeds outside the box (shadow spread, stroke half-width, blur-based effects).
+    /// Used for the QuickReject test so culling never clips something that would have
+    /// been visible.
+    /// </summary>
+    private static SKRect InfluenceRect(SKRect rect, Style s)
+    {
+        float grow = 0f;
+
+        if (s.ShadowColor.HasValue && s.ShadowBlur > 0f)
+            grow = MathF.Max(grow, s.ShadowBlur * 2f
+                                 + MathF.Max(MathF.Abs(s.ShadowOffsetX), MathF.Abs(s.ShadowOffsetY)));
+
+        if (s.BorderColor.HasValue && s.BorderWidth > 0f)
+            grow = MathF.Max(grow, s.BorderWidth);
+
+        // Blur-based effects (Bloom, PulseGlow, ChaseLight, HoverLift) stroke outside
+        // the box with an image filter; 32px covers their worst case at intensity 1.
+        if (s.Effects.Count > 0)
+            grow = MathF.Max(grow, 32f);
+
+        if (s.TextShadowColor.HasValue)
+            grow = MathF.Max(grow, s.TextShadowBlur * 2f
+                                 + MathF.Max(MathF.Abs(s.TextShadowOffsetX), MathF.Abs(s.TextShadowOffsetY)));
+
+        return grow > 0f ? SKRect.Inflate(rect, grow, grow) : rect;
+    }
+
+    private int _zSortUsed;
+
+    private int RentZSlice(int count)
+    {
+        int start = _zSortUsed;
+        if (start + count > _zSort.Length)
+            Array.Resize(ref _zSort, Math.Max(_zSort.Length * 2, start + count));
+        _zSortUsed = start + count;
+        return start;
+    }
+
+    private void ReturnZSlice(int count) => _zSortUsed -= count;
 
     // ── Shape helpers ─────────────────────────────────────────────────────────
 
@@ -863,18 +1003,17 @@ public class SkiaRenderer : IDisposable
 
     // ── Text ──────────────────────────────────────────────────────────────────
 
-    private void DrawText(SKCanvas canvas, string text, LayoutBox box, Style s)
+    /// <param name="colorOverride">Resolved fill color — the hover cross-fade's result, or
+    /// null to use <see cref="Style.Color"/> unchanged.</param>
+    private void DrawText(SKCanvas canvas, string text, LayoutBox box, Style s, PColor? colorOverride = null)
     {
-        var typeface = s.Bold   ? _typefaceBold
-                     : s.Italic ? _typefaceItalic
-                     : SKTypeface.Default;
-
-        using var font = new SKFont(typeface, s.FontSize);
-        font.GetFontMetrics(out var metrics);
+        var entry   = FontCache.Get(s);
+        var font    = entry.Font;
+        var metrics = entry.Metrics;
 
         float contentTop   = box.Y + s.Padding.Top;
         float contentH     = box.Height - s.Padding.Vertical;
-        float textH        = metrics.Descent - metrics.Ascent;
+        float textH        = entry.TextHeight;
         float baselineY    = contentTop + (contentH - textH) / 2f - metrics.Ascent;
 
         float textW        = font.MeasureText(text);
@@ -899,14 +1038,17 @@ public class SkiaRenderer : IDisposable
             }
             else
             {
-                int lo = 0, hi = text.Length;
+                // Span-based probing: the binary search used to allocate a substring per
+                // step, so an elided label cost ~log2(len) string allocations every frame.
+                var span = text.AsSpan();
+                int lo = 0, hi = span.Length;
                 while (lo < hi)
                 {
                     int mid = (lo + hi + 1) / 2;
-                    if (font.MeasureText(text[..mid]) <= budget) lo = mid;
+                    if (font.MeasureText(span[..mid]) <= budget) lo = mid;
                     else hi = mid - 1;
                 }
-                text  = text[..lo] + "...";
+                text  = string.Concat(span[..lo], "...");
                 textW = font.MeasureText(text);
             }
             textX = s.TextAlign switch
@@ -943,22 +1085,97 @@ public class SkiaRenderer : IDisposable
         // Text fill
         _text.Style       = SKPaintStyle.Fill;
         _text.StrokeWidth = 0;
-        _text.Color       = s.Color.HasValue ? (SKColor)s.Color.Value : SKColors.White;
+        _text.Color       = Resolve(colorOverride ?? s.Color);
         canvas.DrawText(text, textX, baselineY, SKTextAlign.Left, font, _text);
     }
 
-    private void DrawTextWave(SKCanvas canvas, string text, LayoutBox box, Style s, float time)
+    /// <summary>
+    /// Paints a <see cref="TextOverflow.Wrap"/> block: one baseline per line, the whole
+    /// block vertically centred in the content box the way a single line already is.
+    /// </summary>
+    /// <remarks>
+    /// The line break-up comes from <see cref="TextLayout.Wrap"/> with exactly the
+    /// arguments <c>LayoutEngine</c> used when it sized this box, so this resolves to a
+    /// cache hit and the painted lines can never disagree with the height that was
+    /// reserved for them. Text shadow and outline apply per line, same as the single-line
+    /// path.
+    /// </remarks>
+    private void DrawWrappedText(SKCanvas canvas, string text, LayoutBox box, Style s, PColor? colorOverride)
     {
-        var typeface = s.Bold   ? _typefaceBold
-                     : s.Italic ? _typefaceItalic
-                     : SKTypeface.Default;
+        var entry   = FontCache.Get(s);
+        var font    = entry.Font;
+        var metrics = entry.Metrics;
 
-        using var font = new SKFont(typeface, s.FontSize);
-        font.GetFontMetrics(out var metrics);
+        float contentLeft  = box.X + s.Padding.Left;
+        float contentWidth = box.Width  - s.Padding.Horizontal;
+        float contentTop   = box.Y + s.Padding.Top;
+        float contentH     = box.Height - s.Padding.Vertical;
+
+        var block = TextLayout.Wrap(text, s.FontSize, s.Bold, s.Italic, contentWidth, s.MaxLines);
+        var lines = block.Lines;
+
+        float step      = entry.TextHeight * s.LineHeight;
+        float blockH    = lines.Length * step;
+        float firstTop  = contentTop + (contentH - blockH) / 2f;
+
+        using SKMaskFilter? shadowFilter = s.TextShadowColor.HasValue && s.TextShadowBlur > 0
+            ? SKMaskFilter.CreateBlur(SKBlurStyle.Normal, s.TextShadowBlur * 0.57f)
+            : null;
+
+        var fillColor = Resolve(colorOverride ?? s.Color);
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.Length == 0) continue;
+
+            float lineW    = font.MeasureText(line);
+            float baseline = firstTop + i * step + (step - entry.TextHeight) / 2f - metrics.Ascent;
+
+            float lineX = s.TextAlign switch
+            {
+                TextAlign.Center => contentLeft + (contentWidth - lineW) / 2f,
+                TextAlign.Right  => box.Right - s.Padding.Right - lineW,
+                _                => contentLeft,
+            };
+
+            if (s.TextShadowColor.HasValue)
+            {
+                _text.Style      = SKPaintStyle.Fill;
+                _text.Color      = s.TextShadowColor.Value;
+                _text.MaskFilter = shadowFilter;
+                canvas.DrawText(line, lineX + s.TextShadowOffsetX, baseline + s.TextShadowOffsetY,
+                    SKTextAlign.Left, font, _text);
+                _text.MaskFilter = null;
+            }
+
+            if (s.TextOutlineColor.HasValue && s.TextOutlineSize > 0)
+            {
+                _text.Style       = SKPaintStyle.StrokeAndFill;
+                _text.StrokeWidth = s.TextOutlineSize * 2f;
+                _text.Color       = s.TextOutlineColor.Value;
+                canvas.DrawText(line, lineX, baseline, SKTextAlign.Left, font, _text);
+            }
+
+            _text.Style       = SKPaintStyle.Fill;
+            _text.StrokeWidth = 0;
+            _text.Color       = fillColor;
+            canvas.DrawText(line, lineX, baseline, SKTextAlign.Left, font, _text);
+        }
+    }
+
+    private static SKColor Resolve(PColor? c) => c.HasValue ? (SKColor)c.Value : SKColors.White;
+
+    private void DrawTextWave(SKCanvas canvas, string text, LayoutBox box, Style s, float time,
+        PColor? colorOverride = null)
+    {
+        var entry   = FontCache.Get(s);
+        var font    = entry.Font;
+        var metrics = entry.Metrics;
 
         float contentTop   = box.Y + s.Padding.Top;
         float contentH     = box.Height - s.Padding.Vertical;
-        float textH        = metrics.Descent - metrics.Ascent;
+        float textH        = entry.TextHeight;
         float baselineY    = contentTop + (contentH - textH) / 2f - metrics.Ascent;
         float totalW       = font.MeasureText(text);
         float contentLeft  = box.X + s.Padding.Left;
@@ -973,7 +1190,7 @@ public class SkiaRenderer : IDisposable
 
         float amplitude = s.FontSize * 0.25f * s.EffectIntensity * 3f;
         _text.Style = SKPaintStyle.Fill; _text.StrokeWidth = 0;
-        _text.Color = s.Color.HasValue ? (SKColor)s.Color.Value : SKColors.White;
+        _text.Color = Resolve(colorOverride ?? s.Color);
 
         float x = startX;
         for (int i = 0; i < text.Length; i++)
@@ -1018,7 +1235,9 @@ public class SkiaRenderer : IDisposable
         _fill.Dispose();
         _stroke.Dispose();
         _text.Dispose();
-        _typefaceBold.Dispose();
-        _typefaceItalic.Dispose();
+        _layer.Dispose();
+        // Typefaces and fonts are owned by FontCache and shared by every renderer
+        // instance in the process — disposing them here would pull them out from
+        // under any other live surface.
     }
 }

@@ -2373,5 +2373,241 @@ SKImage img = SKImage.FromPixels(info, nativePtr, rowBytes); // zero-copy wrap
 
 ---
 
-*Last updated: 2026-04-01 — Major expansion via web research: SKBlendMode (all 29 modes + formulas), SKColorFilter/ColorMatrix (concrete matrices for grayscale/sepia/brightness/contrast/invert), MaskFilter vs ImageFilter blur comparison, SKBitmap/Image/Pixmap decision guide, NodeEffect full catalogue (every effect + style props), Text effects (Typewriter/RollingCounter/TextWave rendering internals), StaggeredEntrance per-frame-rebuild pattern, CardFlip cos(angle) technique (replaces linear), HeatHaze CPU strategies + parameter tables, AO (intensity+radius table), RimLight (3 methods), Bloom (multi-scale + SaveLayer + CPU perf), SpecularSweep, Easing + spring simulation (exponential decay lerp exact ODE derivation, pow(s,dt) alternative form, Ryan Juckett's closed-form critically-damped spring, Apple's intuitive stiffness/damping params, typical values table, EaseOutElastic vs real spring comparison, fixed timestep accumulator pattern), Full CPU raster pipeline end-to-end flowchart, ImGui ID stack/#/### prefixes, ImDrawList internal structure (VtxBuffer/IdxBuffer/CmdBuffer, batching via ImDrawCmdHeader memcmp, AddImage internals, SetNextWindowPos mechanism, BeginChild own draw list), g.LastItemData exact mechanism (single flat struct, overwritten by every ItemAdd()), ImGuiCond, mouse event semantics, Unicode atlas gotcha, Perlin technical deep dive (quintic fade, gradient hash, fBm lacunarity×gain warning, turbulence vs fBm distinction, 3D time animation vs UV scroll, known artifacts, visual recipes table), Simplex noise vs Perlin comparison, Voronoi Fortune's algorithm + Worley noise grid, F1/F2/F2-F1 patterns, distance function shapes, seamless tiling, Scanline/CRT (cosine formula + RGB mask + bloom stack), Plasma demoscene effect (sine sum formula + color mapping), Lava Lamp (noise blobs + metaball SDF + SmoothMin)*
+## Line Breaking & Word Wrap
+
+**What it is:** turning one string into N strings that each fit a pixel width, and
+reporting the resulting block height back to layout. Implemented in `Core/TextLayout.cs`.
+
+**Algorithm — greedy, first-fit:**
+
+```
+for each character i:
+    if whitespace: remember it as lastBreak
+    if measure(line[start..i]) > maxWidth:
+        if lastBreak > start:  emit line[start..lastBreak]; start = lastBreak+1 (skip runs of space)
+        else:                  emit line[start..max(start+1, i)]; start = that end   // hard-break
+        reset lastBreak
+emit the remainder
+```
+
+Greedy first-fit is what every UI toolkit uses. The alternative — Knuth–Plass minimum-raggedness
+line breaking, as used by TeX — optimises the *paragraph* rather than each line, and costs an
+O(n²) dynamic program for a quality difference nobody notices in a 3-line tooltip.
+
+**Three non-obvious requirements, each a bug if missed:**
+
+1. **Hard-break long tokens.** A single word wider than the line (a hash, a path, a run of
+   `AAAA…`) has no whitespace to break at. Without a mid-word fallback it overflows the box
+   silently.
+2. **Never emit an empty line.** `end = Math.Max(start + 1, i)` — if the box is narrower
+   than one glyph, an `end == start` line makes zero progress and the loop never terminates.
+3. **`\n` is a hard break.** Splitting on it first and wrapping each paragraph independently
+   is simpler and more correct than trying to fold it into the width test. Fast-path the
+   (overwhelmingly common) no-newline case: `text.IndexOf('\n') < 0` avoids `String.Split`
+   allocating an array for every label in the window.
+
+**Cost and the cache.** The measure loop is O(n²) in `MeasureText` calls for a paragraph —
+each prefix is re-measured from the start. That is fine *once*, and unacceptable per frame,
+and both layout and the renderer need the identical result. `TextLayout.Wrap` therefore
+caches on `(text, fontSize, bold, italic, maxWidth, maxLines)`:
+
+- `[ThreadStatic]`, matching `FontCache` — `RenderApi` renders from thread-pool threads
+  while the ImGui draw thread does the same, and a shared dictionary would need a lock on
+  the hottest path in the framework.
+- Cleared wholesale past 512 entries. Text that varies every frame (a clock, a counter)
+  would otherwise grow it without bound; a periodic full clear costs one re-break of the
+  stable entries and keeps the ceiling flat.
+
+Because layout and the renderer call it with the same arguments in the same frame, the
+renderer's call is always a dictionary probe, and the painted lines *cannot* disagree with
+the height that was reserved for them.
+
+**Ellipsis inside wrap (`Style.MaxLines`):** the marker has to fit too — a line that fits on
+its own can still overflow once "…" is appended, so budget `maxWidth - measure("…")` and
+binary-search the prefix. Note the single-line `TextOverflow.Ellipsis` path in
+`SkiaRenderer` predates this and uses three ASCII dots `"..."`; the wrap path uses the U+2026
+glyph. Deliberately not unified — changing the former would shift every existing label.
+
+---
+
+## Width-Dependent Measurement in a Two-Pass Box Layout
+
+**The architectural problem.** A classic two-pass layout is: measure bottom-up (intrinsic
+size), then place top-down (assign real boxes). That works only because measurement is a
+*pure function of the subtree* — it reads styles and children and nothing about available
+space. `LayoutEngine._measure` memoises on that assumption, collapsing the placement pass's
+repeated queries from O(N·depth) to one measurement per node.
+
+Wrapping breaks the assumption outright: the height of wrapped text is a function of the
+width it is given, and width only flows top-down. This is the same problem CSS solves with
+min-content/max-content intrinsic sizing, and it is why a naive "just add wrapping" patch
+produces boxes that are the wrong height.
+
+**How PanacheUI resolves it** (`LayoutEngine`):
+
+1. `MeasureNode(node, availContentW)` — measurement now takes the width available to the
+   node's content box.
+2. `HasWrap(node)` decides which memo to use. A subtree with no wrapping text is still
+   width-independent and keeps the original `_measure` map untouched. Only wrapping
+   subtrees use `_measureWrapped`, keyed on `(node, availContentW)`.
+3. `HasWrap` is stamped onto the node itself (`Node.CachedHasWrap` / `HasWrapStamp`), the
+   same self-invalidating pattern as `Node.CachedBox` / `LayoutStamp`. A side table would
+   have put a dictionary probe on the hottest path purely to answer "no" for the ~99% of
+   nodes that hold no wrapping text.
+4. `PlaceNode` settles **width first** — including Min/Max clamps — then re-measures if the
+   final content width differs from the bound the first measurement assumed, then derives
+   height. Ordering matters: a shrink-to-fit box, or one a clamp just moved, ends up at a
+   width the first measurement never saw.
+5. `HorizontalFillWidth` mirrors `PlaceHorizontal`'s Fill split *during measurement*, so a
+   Fit-height row containing an icon and a wrapping label reports the label's real
+   multi-line height. Without it the row measures one line tall and clips.
+
+**Gotcha — mirror the placement's quirks, not the correct behaviour.** `PlaceHorizontal`
+subtracts child margins into `fixedWTotal` and then `PlaceNode` subtracts them again from
+the Fill share. That double-subtraction is long-standing behaviour that consumer layouts
+are visually tuned against. `HorizontalFillWidth` reproduces it exactly. A measurement that
+"fixed" it would disagree with the placement it exists to predict.
+
+**Unbounded widths are normal.** An `OverflowMode.Scroll` container hands children
+`float.MaxValue / 2` so they lay out at natural size. Every width consumer must tolerate
+that: `ContentAvail` propagates it, `TextLayout.Wrap` simply finds nothing to break, and the
+alignment helpers bail out with `contentH >= float.MaxValue / 2f`.
+
+---
+
+## Canvas Scaling for UI Scale
+
+**What it is:** `PanacheSurface.Scale` — making an entire window render larger without any
+node knowing about it.
+
+**The wrong way, and why.** Render at native size and stretch the texture in
+`ImGui.Image`. The result is bilinear-resampled glyph coverage: text is blurry at exactly
+the scales people choose (1.25×, 1.5×), because upsampling an already-antialiased 1× glyph
+cannot invent the sub-pixel coverage a larger rasterisation would have produced.
+
+**The right way — scale the layout, not the output:**
+
+```csharp
+var layout = _layout.Compute(root, Width / scale, Height / scale);   // logical viewport
+InteractionManager.Update(root, layout, mousePos / scale, ...);      // logical pointer
+
+int save = canvas.Save();
+canvas.Scale(scale);          // Skia rasterises at the EFFECTIVE size
+_renderer.Render(canvas, root, layout, time);
+canvas.RestoreToCount(save);
+```
+
+`canvas.Scale` multiplies the CTM, so a 14 px font inside a 1.5× canvas is rasterised by
+Skia as a 21 px font — real hinting, real antialiasing, no resampling. The backing bitmap
+stays at physical size, so the texture upload is unchanged.
+
+**The mouse divide is not optional and its failure mode is nasty.** Layout boxes are in
+logical units. Feed physical-pixel mouse coordinates into hit-testing at 1.5× and every
+click lands at 1.5× its apparent position — which reads as "the UI is haunted" rather than
+as an obvious off-by-a-factor bug. `PanacheSurface.Render` divides internally; callers that
+hit-test the returned dictionary by hand must use `ToLogical`.
+
+**`canvas.Clear` is matrix-independent** — it fills the current clip, which with no clip set
+is the whole device. Clearing inside the scaled block is safe.
+
+---
+
+## Cross-Axis Alignment (`AlignItems` / `AlignSelf`)
+
+Applied on the axis perpendicular to `Flow`, in all three placement helpers
+(`PlaceHorizontal`, `PlaceVertical`, `PlaceHorizontalWrap`).
+
+The offset is computed *before* placing the child, not applied afterwards, because
+`PlaceNode` writes boxes for the entire subtree — shifting after the fact would mean
+re-placing everything beneath it. That requires the child's natural cross size up front,
+which `MeasureNaturalOuter` already provides.
+
+Three cases correctly do nothing:
+
+- `AlignItems.Start` — the default, and byte-identical to pre-existing behaviour.
+- A `SizeMode.Fill` child on the cross axis — it already spans the whole extent.
+- An unbounded cross extent (`>= float.MaxValue / 2f`) inside a scroll container —
+  centring within infinity is meaningless.
+
+`AlignSelf` is a nullable per-child override; `child.AlignSelf ?? parent.AlignItems`.
+
+---
+
+## Renderer-Painted Hover and the Repaint Fingerprint
+
+**The interaction worth understanding** is between hover and `SurfaceFingerprint`.
+
+`NodeAnimState.HoverT` eases 0→1 over several frames. If the renderer reads it, the surface
+must repaint on each of those frames — but the fingerprint is what decides whether to
+repaint at all. Hashing `HoverT` for *every* node would mean moving the cursor across inert
+decoration repaints the whole window. Hashing it for *no* node means the fade never appears.
+
+Resolution: hash it only when `Style.HasHoverStyle` — the node actually declares hover
+colors, so the renderer genuinely reads `HoverT` for it. Consequences fall out cleanly:
+
+- The fade moves the fingerprint, so it repaints at the **full frame rate**, not the
+  30 Hz `AnimationFpsCap`. Correct: this is content change, not clock-driven decoration.
+- Once `HoverT` settles at 0 or 1 the hash stops moving and repainting stops dead.
+- No `animated` flag is needed, so hover never forces the uncapped-repaint path.
+
+**The `dt = 0` trap.** `PanacheSurface.Render`'s `dt` parameter defaults to 0, and plenty of
+callers never pass one. Easing toward a target at zero speed leaves `HoverT` pinned at 0
+forever — the cue simply never appears, with no error anywhere. `NodeAnimState.Update` now
+snaps `HoverT`/`PressT` to their target when `dt <= 0`: no time information means no
+interpolation, not no state.
+
+**Alpha interpolation gotcha.** `PColor.Lerp` interpolates alpha alongside RGB, so fading
+from `PColor.Transparent` (0,0,0,0) drags the color through black. For a node with no base
+background, fade up from a **zero-alpha copy of the hover color** instead —
+`target.WithAlpha(0)` — which is what `SkiaRenderer` does.
+
+---
+
+## ImGui Keyboard Input via Dalamud
+
+**Verified against `Dalamud.Bindings.ImGui.dll` (Dalamud API 15, 2026-08-24)** by compiling
+against it, rather than assumed:
+
+| Member | Type |
+|---|---|
+| `ImGui.GetIO().InputQueueCharacters` | `ImVector<ushort>` — `.Size`, indexer returns `ushort` |
+| `ImGui.GetIO().WantTextInput` | `bool`, **settable** |
+| `ImGui.GetIO().WantCaptureKeyboard` | `bool`, **settable** |
+| `ImGui.IsKeyPressed(ImGuiKey, bool repeat)` | `bool` |
+| `ImGui.IsKeyDown(ImGuiKey)` | `bool` |
+| `ImGui.GetClipboardText()` | `string` |
+
+`ImGuiKey.ModCtrl` exists and is how a Ctrl chord is tested.
+
+**Two channels, not one.** Printable text arrives through `InputQueueCharacters` (filled by
+the platform layer on `WM_CHAR`, so it already accounts for keyboard layout, Shift and
+dead keys). Editing keys — Backspace, arrows, Home/End — are *not* characters and must be
+polled with `IsKeyPressed(key, repeat: true)`. Trying to derive text from key polling
+reimplements the keyboard layout badly; trying to derive Backspace from the char queue
+misses it entirely.
+
+**Filter control characters out of the char queue.** Ctrl+V reaches `WM_CHAR` as `0x16` and
+would be inserted literally. `c >= ' ' && c != 0x7F` is the guard.
+
+**Claiming the keyboard from the game.** Setting `WantTextInput` + `WantCaptureKeyboard` is
+how Dalamud is told to swallow keystrokes rather than pass them to FFXIV. Without it,
+typing into a Panache field also fires hotbar actions.
+
+> ⚠️ **Unverified.** The API shapes above are confirmed by compilation. The *runtime*
+> behaviour — chars actually reaching a focused Panache node, and Dalamud actually
+> swallowing them — has never been exercised with a real keystroke. Confirm in-game before
+> relying on `PUI.TextInput`. See `DEFERRED_FEATURES.md` §12c.
+
+**Focus must be Id-keyed.** Consumers rebuild the node tree every frame, so a retained
+`FocusedNode` reference is an orphan by the next frame, and a widget deciding at build time
+whether to draw itself focused cannot ask an object that does not exist yet.
+`InteractionManager` therefore stores `FocusedId` and re-resolves `FocusedNode` against the
+live tree at the start of every `Update` — the same pattern already used for pointer
+capture and scroll offsets.
+
+---
+
+*Last updated: 2026-08-24 — Added: line breaking & word wrap (greedy first-fit, hard-break and empty-line termination traps, ThreadStatic break cache), width-dependent measurement in a two-pass layout (why memoised intrinsic sizing breaks under wrapping and how the stamped HasWrap split resolves it, plus the deliberate mirroring of PlaceHorizontal's margin double-subtraction), canvas scaling for UI scale (why texture stretching is blurry, the CTM/effective-size argument, the mouse-divide failure mode), cross-axis alignment, renderer-painted hover and its interaction with SurfaceFingerprint (selective HoverT hashing, the dt=0 trap, PColor.Lerp alpha gotcha), ImGui keyboard input via Dalamud (compiler-verified binding surface table, two-channel text vs key input, control-char filtering, keyboard capture, Id-keyed focus).*
+
+*Previously: 2026-04-01 — Major expansion via web research: SKBlendMode (all 29 modes + formulas), SKColorFilter/ColorMatrix (concrete matrices for grayscale/sepia/brightness/contrast/invert), MaskFilter vs ImageFilter blur comparison, SKBitmap/Image/Pixmap decision guide, NodeEffect full catalogue (every effect + style props), Text effects (Typewriter/RollingCounter/TextWave rendering internals), StaggeredEntrance per-frame-rebuild pattern, CardFlip cos(angle) technique (replaces linear), HeatHaze CPU strategies + parameter tables, AO (intensity+radius table), RimLight (3 methods), Bloom (multi-scale + SaveLayer + CPU perf), SpecularSweep, Easing + spring simulation (exponential decay lerp exact ODE derivation, pow(s,dt) alternative form, Ryan Juckett's closed-form critically-damped spring, Apple's intuitive stiffness/damping params, typical values table, EaseOutElastic vs real spring comparison, fixed timestep accumulator pattern), Full CPU raster pipeline end-to-end flowchart, ImGui ID stack/#/### prefixes, ImDrawList internal structure (VtxBuffer/IdxBuffer/CmdBuffer, batching via ImDrawCmdHeader memcmp, AddImage internals, SetNextWindowPos mechanism, BeginChild own draw list), g.LastItemData exact mechanism (single flat struct, overwritten by every ItemAdd()), ImGuiCond, mouse event semantics, Unicode atlas gotcha, Perlin technical deep dive (quintic fade, gradient hash, fBm lacunarity×gain warning, turbulence vs fBm distinction, 3D time animation vs UV scroll, known artifacts, visual recipes table), Simplex noise vs Perlin comparison, Voronoi Fortune's algorithm + Worley noise grid, F1/F2/F2-F1 patterns, distance function shapes, seamless tiling, Scanline/CRT (cosine formula + RGB mask + bloom stack), Plasma demoscene effect (sine sum formula + color mapping), Lava Lamp (noise blobs + metaball SDF + SmoothMin)*
 *Maintained by: Aria (Claude)*

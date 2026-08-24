@@ -13,6 +13,13 @@
     <AssemblyName>PanacheUI</AssemblyName>
     <RootNamespace>PanacheUI</RootNamespace>
     <Version>0.1.3</Version>
+
+    <!-- Build straight into the repo root, which IS the folder Dalamud loads from and
+         the folder every consumer's $(PanacheUIPath) points at. Same one-folder layout
+         as GlamourDresserHelper / PhybLab / ClaudePlugin. There is no separate deploy
+         step and no second copy of the plugin to drift out of sync. -->
+    <OutputPath>../</OutputPath>
+    <OutDir>../</OutDir>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -35,33 +42,17 @@
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.118.0-preview.1.2" />
   </ItemGroup>
 
-  <!-- Post-build: copy DLL + manifest + native SkiaSharp to devPlugins (Debug only) -->
-  <Target Name="CopyToDevPlugins" AfterTargets="Build"
-          Condition="'$(Configuration)' == 'Debug'">
+  <!-- The managed SkiaSharp.dll already lands next to PanacheUI.dll as a package
+       reference, but the native library arrives under runtimes/win-x64/native/. Lift it
+       to the plugin root so consumers copying $(PanacheUIPath)libSkiaSharp.dll — and
+       Dalamud's own resolver — can find it without Umbra having loaded it first. -->
+  <Target Name="FlattenNativeSkia" AfterTargets="Build">
     <Copy
-      SourceFiles="$(TargetPath)"
-      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
+      SourceFiles="$(OutDir)runtimes\win-x64\native\libSkiaSharp.dll"
+      DestinationFolder="$(OutDir)"
       OverwriteReadOnlyFiles="true"
-    />
-    <Copy
-      SourceFiles="$(MSBuildProjectDirectory)\..\PanacheUI.json"
-      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
-      OverwriteReadOnlyFiles="true"
-      Condition="Exists('$(MSBuildProjectDirectory)\..\PanacheUI.json')"
-    />
-    <!-- libSkiaSharp.dll lands in runtimes/win-x64/native/ — copy to devPlugins so it
-         can be found by plugins without Umbra already loaded -->
-    <Copy
-      SourceFiles="$(OutputPath)runtimes\win-x64\native\libSkiaSharp.dll"
-      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
-      OverwriteReadOnlyFiles="true"
-      Condition="Exists('$(OutputPath)runtimes\win-x64\native\libSkiaSharp.dll')"
-    />
-    <Copy
-      SourceFiles="$(OutputPath)SkiaSharp.dll"
-      DestinationFolder="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\"
-      OverwriteReadOnlyFiles="true"
-      Condition="Exists('$(OutputPath)SkiaSharp.dll')"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(OutDir)runtimes\win-x64\native\libSkiaSharp.dll')"
     />
   </Target>
 </Project>

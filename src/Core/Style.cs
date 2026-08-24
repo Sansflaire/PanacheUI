@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using SkiaSharp;
 
 namespace PanacheUI.Core;
@@ -37,6 +38,24 @@ public class Style
     public float Gap { get; set; }
 
     /// <summary>
+    /// Cross-axis alignment of this node's flow children. Default <see cref="Core.AlignItems.Start"/>,
+    /// which is the behaviour this engine had before the property existed.
+    /// </summary>
+    /// <remarks>
+    /// This is the property that removes hand-computed centring margins like
+    /// <c>Margin = new EdgeSize((rowHeight - iconSize) / 2f, 0, 0, 0)</c> — those break the
+    /// moment either size changes, which is precisely what a UI-scale factor does to every
+    /// size at once. Set <c>AlignItems = AlignItems.Center</c> on the row instead.
+    /// Individual children can opt out via <see cref="AlignSelf"/>.
+    /// </remarks>
+    public AlignItems AlignItems { get; set; } = AlignItems.Start;
+
+    /// <summary>
+    /// Per-child override of the parent's <see cref="AlignItems"/>. Null (default) inherits.
+    /// </summary>
+    public AlignItems? AlignSelf { get; set; }
+
+    /// <summary>
     /// When true and Flow == Horizontal, children that exceed the available width
     /// wrap onto a new row. Fill children are treated as Fit in wrapped rows.
     /// </summary>
@@ -47,6 +66,18 @@ public class Style
     /// height and enables scroll-wheel interaction. Default: Clip.
     /// </summary>
     public OverflowMode OverflowY { get; set; } = OverflowMode.Clip;
+
+    /// <summary>
+    /// Controls X-axis overflow behavior — <see cref="OverflowY"/>'s horizontal
+    /// counterpart. Only meaningful on a <see cref="Flow.Horizontal"/> node without
+    /// <see cref="FlowWrap"/>: Scroll lays out children at their natural width regardless
+    /// of this node's own width, clips to it, and enables scroll-wheel panning. A pure
+    /// horizontal scroller (this set, <see cref="OverflowY"/> left at Clip) also accepts
+    /// the plain vertical wheel delta as a horizontal pan — see
+    /// <see cref="Rendering.PanacheSurface.Render"/>'s <c>scrollDelta</c> remarks — since
+    /// most mice have no horizontal wheel. Default: Clip.
+    /// </summary>
+    public OverflowMode OverflowX { get; set; } = OverflowMode.Clip;
 
     /// <summary>Minimum pixel width (0 = unconstrained).</summary>
     public float MinWidth { get; set; }
@@ -151,7 +182,26 @@ public class Style
     public bool Bold      { get; set; }
     public bool Italic    { get; set; }
     public TextAlign TextAlign       { get; set; } = TextAlign.Left;
+
+    /// <summary>
+    /// How text that doesn't fit the node's content width is handled. Default Clip.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Core.TextOverflow.Wrap"/> is the only value that changes <i>layout</i>:
+    /// a wrapping node measures its intrinsic height from the number of lines the text
+    /// actually breaks into at the width it ends up with, so a <see cref="SizeMode.Fit"/>
+    /// height (and every Fit ancestor above it) grows to hold the whole block. Clip and
+    /// Ellipsis are purely render-time and always measure as a single line.
+    /// </remarks>
     public TextOverflow TextOverflow { get; set; } = TextOverflow.Clip;
+
+    /// <summary>
+    /// Maximum number of wrapped lines. 0 (default) = unlimited. Only meaningful with
+    /// <see cref="Core.TextOverflow.Wrap"/>; the last kept line is ellipsized when text
+    /// remains.
+    /// </summary>
+    public int MaxLines { get; set; }
+
     public float LineHeight          { get; set; } = 1.2f;
 
     /// <summary>Outline / stroke painted behind text glyphs.</summary>
@@ -169,6 +219,38 @@ public class Style
 
     /// <summary>Vertical pixel offset of the text shadow. Default 1.</summary>
     public float TextShadowOffsetY  { get; set; } = 1f;
+
+    // ── Hover ───────────────────────────────────────────────────────────────
+    //
+    // Set any of these and the renderer paints the hover cue itself, cross-fading from
+    // the base value over NodeAnimState.HoverT. Nothing else is required: hover state is
+    // tracked for every node in the layout, not only IsInteractive ones.
+    //
+    // This exists because every consumer was otherwise reimplementing the same
+    // hover tracker — an OnMouseEnter handler per row, a _hoverId field, and a re-style
+    // that lands a frame late because the tree is rebuilt before the event that changes
+    // it is dispatched. DESIGN_SYSTEM §7.2 makes a hover cue mandatory, so that was
+    // boilerplate the design system forced on everyone.
+
+    /// <summary>Background painted at full hover. Cross-faded from <see cref="BackgroundColor"/>.</summary>
+    public PColor? HoverBackgroundColor { get; set; }
+
+    /// <summary>
+    /// Gradient end painted at full hover, for a node whose base background is a gradient.
+    /// Ignored unless <see cref="HoverBackgroundColor"/> is also set.
+    /// </summary>
+    public PColor? HoverBackgroundGradientEnd { get; set; }
+
+    /// <summary>Border color at full hover. Cross-faded from <see cref="BorderColor"/>.</summary>
+    public PColor? HoverBorderColor { get; set; }
+
+    /// <summary>Text color at full hover. Cross-faded from <see cref="Color"/>.</summary>
+    public PColor? HoverColor { get; set; }
+
+    /// <summary>True when any hover color is set, so the renderer and the fingerprint
+    /// only pay for hover on nodes that actually asked for it.</summary>
+    internal bool HasHoverStyle =>
+        HoverBackgroundColor.HasValue || HoverBorderColor.HasValue || HoverColor.HasValue;
 
     // ── Clip ────────────────────────────────────────────────────────────────
 
@@ -267,4 +349,166 @@ public class Style
             BorderRadiusBottomLeft  ?? r
         );
     }
+
+    // ── Visual fingerprint ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Mixes every property that <see cref="Rendering.SkiaRenderer"/> reads into a
+    /// running hash, so a surface can tell whether a rebuilt node tree would paint
+    /// the same pixels as the last one.
+    /// </summary>
+    /// <remarks>
+    /// <para>Purely geometric properties (Width/Height/*Mode, Margin, Gap, FlowWrap,
+    /// Min/Max, AspectRatio, Position/Left/Top, LineHeight) are deliberately absent:
+    /// they only reach the renderer through the computed <see cref="Layout.LayoutBox"/>,
+    /// which the caller hashes alongside this. Padding <i>is</i> included because the
+    /// renderer reads it directly when placing text inside the box.</para>
+    ///
+    /// <para><b>If you add a property that the renderer reads, add it here too.</b>
+    /// A field that affects painting but not this hash will show up as a stale
+    /// surface that only refreshes when something else changes.</para>
+    /// </remarks>
+    internal ulong AppendVisualHash(ulong h)
+    {
+        // Background / shape
+        h = Hash.Color(h, BackgroundColor);
+        h = Hash.Color(h, BackgroundGradientEnd);
+        h = Hash.Bool (h, BackgroundGradientRadial);
+        h = Hash.F32  (h, BackgroundGradientCenterX);
+        h = Hash.F32  (h, BackgroundGradientCenterY);
+        h = Hash.I32  (h, (int)Flow);              // drives linear-gradient direction
+
+        h = Hash.Ref  (h, ImageBitmap);
+        h = Hash.Color(h, ImageTint);
+
+        h = Hash.Color(h, BorderColor);
+        h = Hash.F32  (h, BorderWidth);
+        h = Hash.F32  (h, BorderRadius);
+        h = Hash.F32N (h, BorderRadiusTopLeft);
+        h = Hash.F32N (h, BorderRadiusTopRight);
+        h = Hash.F32N (h, BorderRadiusBottomRight);
+        h = Hash.F32N (h, BorderRadiusBottomLeft);
+
+        h = Hash.Color(h, ShadowColor);
+        h = Hash.F32  (h, ShadowBlur);
+        h = Hash.F32  (h, ShadowOffsetX);
+        h = Hash.F32  (h, ShadowOffsetY);
+
+        // Clipping
+        h = Hash.Bool (h, ClipContent);
+        h = Hash.I32  (h, (int)OverflowY);
+        h = Hash.I32  (h, (int)OverflowX);
+        h = Hash.Ref  (h, ClipPath);
+
+        // Text
+        h = Hash.Color(h, Color);
+        h = Hash.F32  (h, FontSize);
+        h = Hash.Bool (h, Bold);
+        h = Hash.Bool (h, Italic);
+        h = Hash.I32  (h, (int)TextAlign);
+        h = Hash.I32  (h, (int)TextOverflow);
+        h = Hash.I32  (h, MaxLines);
+        // LineHeight is normally geometry-only, but a Wrap node paints multiple baselines
+        // from it directly rather than through the box.
+        if (TextOverflow == TextOverflow.Wrap) h = Hash.F32(h, LineHeight);
+        h = Hash.Color(h, TextOutlineColor);
+        h = Hash.F32  (h, TextOutlineSize);
+        h = Hash.Color(h, TextShadowColor);
+        h = Hash.F32  (h, TextShadowBlur);
+        h = Hash.F32  (h, TextShadowOffsetX);
+        h = Hash.F32  (h, TextShadowOffsetY);
+
+        // Padding — read directly by the renderer when placing text.
+        var p = Padding;
+        h = Hash.F32(h, p.Top);
+        h = Hash.F32(h, p.Right);
+        h = Hash.F32(h, p.Bottom);
+        h = Hash.F32(h, p.Left);
+
+        // Hover — the target colors only. The live HoverT that interpolates towards them
+        // is animation state, hashed by SurfaceFingerprint alongside the scroll offset.
+        h = Hash.Color(h, HoverBackgroundColor);
+        h = Hash.Color(h, HoverBackgroundGradientEnd);
+        h = Hash.Color(h, HoverBorderColor);
+        h = Hash.Color(h, HoverColor);
+
+        // Compositing / ordering
+        h = Hash.F32(h, Opacity);
+        h = Hash.I32(h, ZIndex);
+
+        // Effects
+        var effects = _effects;
+        if (effects != null)
+        {
+            for (int i = 0; i < effects.Count; i++) h = Hash.I32(h, (int)effects[i]);
+            h = Hash.Color(h, EffectColor1);
+            h = Hash.Color(h, EffectColor2);
+            h = Hash.F32  (h, EffectScale);
+            h = Hash.F32  (h, EffectSpeed);
+            h = Hash.F32  (h, EffectIntensity);
+        }
+
+        return h;
+    }
+
+    /// <summary>True when this node paints a time-driven effect and can never be cached across frames.</summary>
+    internal bool HasEffects => _effects is { Count: > 0 };
+}
+
+/// <summary>
+/// FNV-1a mixing helpers for the surface content fingerprint.
+/// </summary>
+/// <remarks>
+/// Everything here is aggressively inlined: the fingerprint walk performs tens of
+/// thousands of these per frame, and at that volume the call overhead alone was
+/// measurable against the rasterisation it exists to avoid.
+/// </remarks>
+internal static class Hash
+{
+    private const ulong Prime = 1099511628211UL;
+
+    /// <summary>The FNV-1a offset basis — start every fingerprint here.</summary>
+    public const ulong Seed = 14695981039346656037UL;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong U64(ulong h, ulong v) => (h ^ v) * Prime;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong I32(ulong h, int v) => U64(h, (uint)v);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong F32(ulong h, float v) => U64(h, (uint)BitConverter.SingleToInt32Bits(v));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong F32N(ulong h, float? v) =>
+        U64(h, v.HasValue ? (uint)BitConverter.SingleToInt32Bits(v.Value) : 0xFFFF_FFFFUL);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Bool(ulong h, bool v) => U64(h, v ? 1UL : 2UL);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Color(ulong h, PColor c) => U64(h, Packed(c));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Color(ulong h, PColor? c) =>
+        // The 33rd bit distinguishes "no color" from a color that happens to pack to 0.
+        U64(h, c.HasValue ? Packed(c.Value) | 0x1_0000_0000UL : 0UL);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong Packed(PColor c) =>
+        ((uint)c.A << 24) | ((uint)c.R << 16) | ((uint)c.G << 8) | c.B;
+
+    /// <summary>
+    /// Mixes a string via the runtime's own vectorised hash rather than char-by-char.
+    /// <c>string.GetHashCode()</c> is randomised per process but stable within one, and
+    /// the fingerprint is only ever compared against the previous frame of the same
+    /// process — so per-process randomisation is irrelevant here.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Str(ulong h, string? s) =>
+        s == null ? U64(h, 0) : U64(h, ((ulong)(uint)s.Length << 32) | (uint)s.GetHashCode());
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Ref(ulong h, object? o) =>
+        U64(h, o == null ? 0UL : (ulong)(uint)RuntimeHelpers.GetHashCode(o));
 }

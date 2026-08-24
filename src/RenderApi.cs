@@ -7,20 +7,26 @@ using System.Threading.Tasks;
 using PanacheUI.Core;
 using PanacheUI.Layout;
 using PanacheUI.Rendering;
+using PanacheUI.Theming;
 using SkiaSharp;
 
 namespace PanacheUI;
 
 /// <summary>
-/// Local HTTP server on port 17779 for Claude to self-test rendered effects.
-/// Renders any NodeEffect to a PNG strip (N frames across time) and returns the file path.
+/// Local HTTP server on port 17779. Serves two things:
+///   1. Effect self-test — renders any NodeEffect to a PNG strip and returns the path.
+///   2. Theme registry — lists and returns full color palettes for every registered
+///      PanacheTheme (built-in + user themes from the on-disk folder).
 ///
 /// Endpoints:
-///   GET /effects                                           → JSON array of all NodeEffect names
-///   GET /render?effect=HeatHaze[&c1=FFB86B][&c2=6B8FFF]  → renders a frame strip, saves PNG
+///   GET /effects                                          → JSON array of all NodeEffect names
+///   GET /render?effect=HeatHaze[&c1=FFB86B][&c2=6B8FFF] → renders a frame strip, saves PNG
 ///            [&speed=1.0][&scale=1.0][&intensity=0.35]
 ///            [&frames=8][&duration=3.0][&w=240][&h=100]
 ///   GET /state                                            → health + port confirmation
+///   GET /themes                                           → array of all registered themes (full colors)
+///   GET /themes/{name}                                    → single theme by name (case-insensitive)
+///   GET /themes/active                                    → the currently active theme
 /// </summary>
 public sealed class RenderApi : IDisposable
 {
@@ -58,13 +64,16 @@ public sealed class RenderApi : IDisposable
             var absPath = ctx.Request.Url?.AbsolutePath ?? "/";
             var q       = ctx.Request.QueryString;
 
-            string body = absPath switch
-            {
-                "/effects" => HandleEffects(),
-                "/render"  => HandleRender(q),
-                "/state"   => $"{{\"ok\":true,\"port\":{Port},\"plugin\":\"PanacheUI\"}}",
-                _          => "{\"error\":\"unknown endpoint\"}"
-            };
+            string body;
+            if      (absPath == "/effects")            body = HandleEffects();
+            else if (absPath == "/render")             body = HandleRender(q);
+            else if (absPath == "/state")              body = $"{{\"ok\":true,\"port\":{Port},\"plugin\":\"PanacheUI\"}}";
+            else if (absPath == "/stats")              body = Diagnostics.PanacheStats.ToJson();
+            else if (absPath == "/stats/reset")      { Diagnostics.PanacheStats.ResetAll(); body = "{\"ok\":true,\"reset\":true}"; }
+            else if (absPath == "/themes")             body = HandleThemesList();
+            else if (absPath == "/themes/active")      body = HandleThemeActive();
+            else if (absPath.StartsWith("/themes/"))   body = HandleThemeByName(absPath.Substring("/themes/".Length));
+            else                                       body = "{\"error\":\"unknown endpoint\"}";
 
             var bytes = Encoding.UTF8.GetBytes(body);
             ctx.Response.ContentType     = "application/json; charset=utf-8";
@@ -88,6 +97,103 @@ public sealed class RenderApi : IDisposable
         var names = Enum.GetNames<NodeEffect>();
         return "[" + string.Join(",", Array.ConvertAll(names, n => $"\"{n}\"")) + "]";
     }
+
+    // ── /themes ─────────────────────────────────────────────────────────────
+
+    private static string HandleThemesList()
+    {
+        var themes    = PanacheThemes.All;
+        var builtIns  = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        foreach (var t in PanacheThemes.BuiltIn) builtIns.Add(t.Name);
+
+        var sb = new StringBuilder();
+        sb.Append("{\"active\":\"").Append(Escape(PanacheThemes.Active.Name)).Append("\",");
+        sb.Append("\"themes\":[");
+        for (int i = 0; i < themes.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            AppendThemeJson(sb, themes[i], builtIns.Contains(themes[i].Name) ? "builtin" : "folder");
+        }
+        sb.Append("]}");
+        return sb.ToString();
+    }
+
+    private static string HandleThemeActive()
+    {
+        var t        = PanacheThemes.Active;
+        var builtIns = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        foreach (var b in PanacheThemes.BuiltIn) builtIns.Add(b.Name);
+
+        var sb = new StringBuilder();
+        AppendThemeJson(sb, t, builtIns.Contains(t.Name) ? "builtin" : "folder");
+        return sb.ToString();
+    }
+
+    private static string HandleThemeByName(string name)
+    {
+        var t = PanacheThemes.Find(Uri.UnescapeDataString(name));
+        if (t == null) return $"{{\"error\":\"unknown theme\",\"name\":\"{Escape(name)}\"}}";
+
+        var builtIns = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        foreach (var b in PanacheThemes.BuiltIn) builtIns.Add(b.Name);
+
+        var sb = new StringBuilder();
+        AppendThemeJson(sb, t, builtIns.Contains(t.Name) ? "builtin" : "folder");
+        return sb.ToString();
+    }
+
+    private static void AppendThemeJson(StringBuilder sb, PanacheTheme t, string source)
+    {
+        sb.Append('{');
+        sb.Append("\"name\":\"").Append(Escape(t.Name)).Append("\",");
+        sb.Append("\"source\":\"").Append(source).Append("\",");
+        Field(sb, "base",         t.Base);         sb.Append(',');
+        Field(sb, "panel",        t.Panel);        sb.Append(',');
+        Field(sb, "panel2",       t.Panel2);       sb.Append(',');
+        Field(sb, "cardBg",       t.CardBg);       sb.Append(',');
+        Field(sb, "stripe1",      t.Stripe1);      sb.Append(',');
+        Field(sb, "stripe2",      t.Stripe2);      sb.Append(',');
+        Field(sb, "textHi",       t.TextHi);       sb.Append(',');
+        Field(sb, "textMed",      t.TextMed);      sb.Append(',');
+        Field(sb, "textMuted",    t.TextMuted);    sb.Append(',');
+        Field(sb, "textDim",      t.TextDim);      sb.Append(',');
+        Field(sb, "textSubtle",   t.TextSubtle);   sb.Append(',');
+        Field(sb, "gearName",     t.GearName);     sb.Append(',');
+        Field(sb, "accent",       t.Accent);       sb.Append(',');
+        Field(sb, "accentAlt",    t.AccentAlt);    sb.Append(',');
+        Field(sb, "statusOk",     t.StatusOk);     sb.Append(',');
+        Field(sb, "statusAct",    t.StatusAct);    sb.Append(',');
+        Field(sb, "statusRet",    t.StatusRet);    sb.Append(',');
+        Field(sb, "statusAtt",    t.StatusAtt);    sb.Append(',');
+        Field(sb, "statusMiss",   t.StatusMiss);   sb.Append(',');
+        Field(sb, "rowLocatedBg", t.RowLocatedBg); sb.Append(',');
+        Field(sb, "rowLocatedBd", t.RowLocatedBd); sb.Append(',');
+        Field(sb, "rowOwnedBg",   t.RowOwnedBg);   sb.Append(',');
+        Field(sb, "rowOwnedBd",   t.RowOwnedBd);   sb.Append(',');
+        Field(sb, "rowStoredBg",  t.RowStoredBg);  sb.Append(',');
+        Field(sb, "rowStoredBd",  t.RowStoredBd);  sb.Append(',');
+        Field(sb, "closeFill1",   t.CloseFill1);   sb.Append(',');
+        Field(sb, "closeFill2",   t.CloseFill2);   sb.Append(',');
+        Field(sb, "closeBorder",  t.CloseBorder);  sb.Append(',');
+        Field(sb, "glowGold",     t.GlowGold);     sb.Append(',');
+        Field(sb, "glowCyan",     t.GlowCyan);     sb.Append(',');
+        Field(sb, "warning",      t.Warning);      sb.Append(',');
+        Field(sb, "warningMuted", t.WarningMuted); sb.Append(',');
+        Field(sb, "white",        t.White);
+        sb.Append('}');
+    }
+
+    private static void Field(StringBuilder sb, string key, PColor c)
+    {
+        sb.Append('"').Append(key).Append("\":\"");
+        // #RRGGBB when fully opaque, #RRGGBBAA otherwise
+        if (c.A == 255) sb.Append('#').AppendFormat("{0:X2}{1:X2}{2:X2}", c.R, c.G, c.B);
+        else            sb.Append('#').AppendFormat("{0:X2}{1:X2}{2:X2}{3:X2}", c.R, c.G, c.B, c.A);
+        sb.Append('"');
+    }
+
+    private static string Escape(string s)
+        => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     // ── /render ─────────────────────────────────────────────────────────────
 
