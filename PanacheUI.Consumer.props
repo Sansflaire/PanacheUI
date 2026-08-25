@@ -101,13 +101,33 @@
   <!-- SkipUnchangedFiles matters here: libSkiaSharp is ~9.6 MB and would otherwise be
        recopied on every incremental build. -->
   <Target Name="PanacheVendorPayload" AfterTargets="Build">
-    <ItemGroup>
-      <PanacheVendoredIcon Include="$(PanacheUIPath)Icons\*.png" Condition="'$(PanacheIncludeIcons)' == 'true'" />
-      <PanacheVendoredTheme Include="$(PanacheUIPath)Themes\**\*" Condition="'$(PanacheIncludeThemes)' == 'true'" />
+    <!-- Icon selection.
+           no <PanacheIcon> items  -> ship all 167 (~3.9 MB). Safe default.
+           <PanacheIcon Include=".."> -> ship only those IDs.
+           PanacheIncludeIcons=false  -> ship none.
+
+         Subsetting is DECLARATIVE on purpose. Auto-detecting used icons from source was
+         tried and does not work on this codebase: call sites read PUI.Icon(Ico.Close), not
+         PUI.Icon(5), and a grep for `const int X = N` across a project also hoovers up every
+         unrelated timeout and pixel size. Under-detecting ships a plugin whose icons are
+         silently grey boxes, so the only safe automation is none — you list what you use.
+
+         A declared ID with no matching PNG is a hard error rather than a shrug: a typo'd
+         subset is exactly the silent-placeholder failure this whole mechanism exists to
+         prevent, and it should not survive the build that introduced it. -->
+    <ItemGroup Condition="'$(PanacheIncludeIcons)' == 'true'">
+      <PanacheVendoredIcon Include="$(PanacheUIPath)Icons\*.png" Condition="'@(PanacheIcon)' == ''" />
+      <_PanacheIconPadded Include="@(PanacheIcon)" Condition="'@(PanacheIcon)' != ''">
+        <File>$(PanacheUIPath)Icons\$([System.String]::Format('{0:0000}', $([System.Convert]::ToInt32('%(Identity)')))).png</File>
+      </_PanacheIconPadded>
+      <PanacheVendoredIcon Include="@(_PanacheIconPadded->'%(File)')" Condition="'@(PanacheIcon)' != ''" />
     </ItemGroup>
 
     <Error Condition="'$(PanacheIncludeIcons)' == 'true' AND '@(PanacheVendoredIcon)' == ''"
            Text="No icons found in '$(PanacheUIPath)Icons'. Every PUI.Icon and PUI.CloseButton would render as a placeholder." />
+
+    <Error Condition="'$(PanacheIncludeIcons)' == 'true' AND '@(PanacheIcon)' != '' AND !Exists('%(PanacheVendoredIcon.FullPath)')"
+           Text="Declared icon %(PanacheVendoredIcon.Filename) has no PNG in '$(PanacheUIPath)Icons'. Fix the PanacheIcon list - a wrong ID renders as a silent grey placeholder at runtime." />
 
     <!-- Into the build output, so a CI Package step can take the payload from $(TargetDir). -->
     <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
@@ -118,6 +138,30 @@
     <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(PanacheDeployPath)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="Exists('$(PanacheDeployPath)')" />
     <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(PanacheDeployPath)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeIcons)' == 'true' AND Exists('$(PanacheDeployPath)')" />
     <Copy SourceFiles="@(PanacheVendoredTheme)" DestinationFolder="$(PanacheDeployPath)Themes\%(RecursiveDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeThemes)' == 'true' AND Exists('$(PanacheDeployPath)')" />
+
+    <!-- Prune icons that are no longer wanted. Copy-only leaves whatever a previous build put
+         there, so shrinking a subset (or turning icons off) would otherwise keep shipping the
+         old full set out of the dev-plugin folder, which is never cleaned. CI starts from an
+         empty output directory and does not need this; a developer's machine very much does,
+         and "it was 3.9 MB on my disk but 550 KB in CI" is the kind of divergence that makes a
+         packaging bug hard to see.
+
+         Scoped deliberately tightly: only files matching PanacheUI's own 4-digit NNNN.png
+         naming, only inside the Icons folder, and only ones absent from the wanted list. A
+         plugin's own artwork does not use that shape and is never touched. -->
+    <ItemGroup>
+      <_PanacheIconOnDisk Include="$(TargetDir)Icons\????.png" />
+      <_PanacheIconOnDisk Include="$(PanacheDeployPath)Icons\????.png" Condition="Exists('$(PanacheDeployPath)')" />
+      <!-- The destination paths the copies above just wrote. Excluding by full path is what
+           makes this correct; an earlier attempt excluded via a nested %(...) metadata
+           reference inside a transform, which MSBuild evaluates to nothing — so every icon
+           counted as stale and the prune deleted the entire set it had just copied. -->
+      <_PanacheIconWanted Include="@(PanacheVendoredIcon->'$(TargetDir)Icons\%(Filename)%(Extension)')" />
+      <_PanacheIconWanted Include="@(PanacheVendoredIcon->'$(PanacheDeployPath)Icons\%(Filename)%(Extension)')" Condition="Exists('$(PanacheDeployPath)')" />
+      <_PanacheIconStale Include="@(_PanacheIconOnDisk)" Exclude="@(_PanacheIconWanted)" />
+    </ItemGroup>
+    <Delete Files="@(_PanacheIconStale)" ContinueOnError="WarnAndContinue" Condition="'@(_PanacheIconStale)' != ''" />
+    <Message Importance="normal" Text="PanacheUI pruned @(_PanacheIconStale->Count()) stale icon(s)" Condition="'@(_PanacheIconStale)' != ''" />
 
     <Message Importance="high" Text="PanacheUI vendored: @(PanacheVendoredLib->Count()) libs, @(PanacheVendoredIcon->Count()) icons -> $(TargetDir)" />
   </Target>

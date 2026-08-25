@@ -115,6 +115,46 @@ public static class PanacheIcons
     /// <summary>True if an icon exists for this id (attempts to load it, same as <see cref="Get"/>).</summary>
     public static bool Exists(int id) => Get(id) != null;
 
+    /// <summary>
+    /// Every icon ID that was asked for and could not be loaded, ascending. Empty when all is
+    /// well.
+    /// </summary>
+    /// <remarks>
+    /// <para>A missing icon is deliberately not an exception — <see cref="Get"/> returns null and
+    /// <see cref="Components.PUI.Icon"/> draws a placeholder swatch, because one absent glyph is
+    /// never worth taking a window down. The cost of that choice is that the failure is
+    /// <i>silent</i>: a grey box reads as a design decision, not a packaging bug, which is
+    /// precisely how a release that shipped no icons at all went unnoticed through several
+    /// versions.</para>
+    ///
+    /// <para>This list is the antidote. A consumer that vendors a subset of the icon set (see
+    /// <c>PanacheIcon</c> in <c>PanacheUI.Consumer.props</c>) should log it once the UI has drawn
+    /// at least one frame — anything in here is an ID the plugin actually asked for and did not
+    /// ship:</para>
+    /// <code>
+    /// if (PanacheIcons.MissingIds.Count > 0)
+    ///     Log.Warning($"[MyPlugin] icons not vendored: {string.Join(", ", PanacheIcons.MissingIds)}");
+    /// </code>
+    ///
+    /// <para>Populated lazily by <see cref="Get"/>, so it is only meaningful after the icons in
+    /// question have been requested at least once. Reset by a <see cref="FolderOverride"/> change,
+    /// along with the rest of the cache.</para>
+    /// </remarks>
+    public static IReadOnlyList<int> MissingIds
+    {
+        get
+        {
+            // Built from the cache rather than tracked in a second collection: the cache already
+            // records a miss as a null entry, and deriving avoids two structures that could
+            // disagree about what failed.
+            var missing = new List<int>();
+            foreach (var kv in Cache)
+                if (kv.Value == null) missing.Add(kv.Key);
+            missing.Sort();
+            return missing;
+        }
+    }
+
     /// <summary>Every icon ID currently found on disk, ascending. Scans <see cref="IconsFolder"/>
     /// each call — cheap (a directory listing of a handful of files), not cached, so it stays
     /// accurate if icons are added after the process starts.</summary>
