@@ -1,7 +1,7 @@
 # PanacheUI Icon Set
 
-78 flat white-on-transparent glyphs, 313×313 RGBA, shipped in [`Icons/`](Icons/) as
-zero-padded 4-digit PNGs (`0001.png` … `0078.png`).
+167 flat white-on-transparent glyphs, 313×313 RGBA, shipped in [`Icons/`](Icons/) as
+zero-padded 4-digit PNGs (`0001.png` … `0167.png`).
 
 ```csharp
 PUI.Icon(36, 16f, tint: accent)     // decorative by default — PointerEvents.None, no Id
@@ -51,6 +51,11 @@ file was written to remove.
 Names are unique across the set, so near-identical variants (`0005`/`0006`, `0012`/`0048`,
 `0034`/`0067`) are distinguished by their differing detail rather than being collapsed
 into one name.
+
+Where a family is the *same subject drawn several ways* — four chocobo heads, four stars,
+four bin lids — the members are numbered (`star-solid-1` … `star-solid-4`) rather than
+given four strained adjectives. The **Glyph** column still records what actually separates
+them, so the number is a handle and the column is the description.
 
 Every name below was assigned by looking at the rendered glyph, not inferred from
 filename order. Two prior verbal descriptions turned out to be wrong on inspection and are
@@ -186,6 +191,195 @@ hexagon** (not an empty box).
 | 0076 | `globe-compass` | Wireframe globe with compass points |
 | 0077 | `earth-orbit` | Earth with an orbital ring and satellite dots |
 | 0078 | `earth-compass-frame` | Earth inside an ornate compass frame |
+
+## Visibility — 0079–0080
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0079 | `eye-open` | Open eye with a highlighted pupil |
+| 0080 | `eye-slashed` | Same eye struck through by a diagonal bar (hidden) |
+
+## Plus & bar variants — 0081–0088
+
+Four plus signs and four bars in matching corner treatments — use them as an add / remove
+pair and keep the *same* corner style for both halves of the pair (`0081`+`0085` rounded,
+`0082`+`0086` chamfered, `0083`+`0087` stepped, `0084`+`0088` pointed).
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0081 | `plus-outline-rounded` | Plus outline, rounded corners |
+| 0082 | `plus-outline-chamfered` | Plus outline, corners cut at 45° |
+| 0083 | `plus-outline-stepped` | Plus outline, corners stepped like pixel art |
+| 0084 | `plus-solid-pointed` | Solid plus, every arm tapering to a point |
+| 0085 | `bar-outline-rounded` | Horizontal bar outline, rounded corners |
+| 0086 | `bar-outline-chamfered` | Horizontal bar outline, corners cut at 45° |
+| 0087 | `bar-solid-stepped` | Solid bar with stepped tabs at each end |
+| 0088 | `bar-solid-pointed` | Solid bar tapering to a point at each end |
+
+## Chevrons — 0089–0104
+
+The full 4 directions × 4 styles grid: solid single, solid double, outline single, outline
+double. Outline variants carry a small notch on each foot, so they read as heavier chrome
+than the solid ones despite being hollow.
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0089 | `chevron-up` | Single chevron pointing up, solid |
+| 0090 | `chevron-up-double` | Two stacked chevrons pointing up, solid |
+| 0091 | `chevron-up-outline` | Single chevron up, hollow with notched feet |
+| 0092 | `chevron-up-double-outline` | Two chevrons up, hollow with notched feet |
+| 0093 | `chevron-right` | Single chevron pointing right, solid |
+| 0094 | `chevron-right-double` | Two chevrons pointing right, solid |
+| 0095 | `chevron-right-outline` | Single chevron right, hollow with notched foot |
+| 0096 | `chevron-right-double-outline` | Two chevrons right, hollow with notched feet |
+| 0097 | `chevron-down` | Single chevron pointing down, solid |
+| 0098 | `chevron-down-double` | Two stacked chevrons pointing down, solid |
+| 0099 | `chevron-down-outline` | Single chevron down, hollow with notched shoulders |
+| 0100 | `chevron-down-double-outline` | Two chevrons down, hollow with notched shoulders |
+| 0101 | `chevron-left` | Single chevron pointing left, solid |
+| 0102 | `chevron-left-double` | Two chevrons pointing left, solid |
+| 0103 | `chevron-left-outline` | Single chevron left, hollow with notched foot |
+| 0104 | `chevron-left-double-outline` | Two chevrons left, hollow with notched feet |
+
+## Chocobo heads — 0105–0108
+
+Four takes on the same left-facing beaked head. `0107` is the outlier: narrowed brow, no eye
+highlight — it reads as a raptor rather than a friendly bird, so reach for it when the tone
+is hostile.
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0105 | `chocobo-head-1` | Round eye with highlight, short swept crest |
+| 0106 | `chocobo-head-2` | Long layered crest plumes, open-tipped feathers |
+| 0107 | `chocobo-head-3` | Narrowed angry eye, spiked crest — fierce/raptor read |
+| 0108 | `chocobo-head-4` | Large round eye, tall upright crest, heavy beak |
+
+## Music notes — 0109–0112
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0109 | `music-note-eighth` | Single eighth note, straight flag |
+| 0110 | `music-note-beamed-double` | Two notes joined by a double beam (sixteenths) |
+| 0111 | `music-note-eighth-curled` | Single eighth note with a curled flag |
+| 0112 | `music-note-beamed` | Two notes joined by a single beam |
+
+## Insects — 0113–0116
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0113 | `beetle` | Stag beetle seen from above, antlered mandibles |
+| 0114 | `butterfly` | Butterfly with patterned wings, wings spread |
+| 0115 | `ladybug` | Ladybug from above, four spots |
+| 0116 | `bee` | Bee from above, veined wings and striped abdomen |
+
+## Apparel — 0117–0120
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0117 | `tunic-belted` | Short-sleeved tunic with cross-lacing and a buckled belt |
+| 0118 | `shirt-collared` | Short-sleeved collared shirt with a button placket |
+| 0119 | `shirt-laced` | Long-sleeved shirt, standing collar, laced neckline |
+| 0120 | `vest-laced` | Sleeveless laced vest over a buckled belt |
+
+## Warnings — 0121–0124
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0121 | `warning-triangle-1` | Rounded triangle outline, exclamation inside |
+| 0122 | `warning-triangle-2` | Double-stroke triangle outline, exclamation inside |
+| 0123 | `warning-triangle-3` | Solid triangle, exclamation knocked out |
+| 0124 | `warning-triangle-4` | Ragged hand-torn triangle, exclamation inside |
+
+## Delete — 0125–0128
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0125 | `trash-can-1` | Flat wide lid, straight tapered body, three slots |
+| 0126 | `trash-can-2` | Lid with a rim line, strongly tapered body |
+| 0127 | `trash-can-3` | Domed lid, upright body |
+| 0128 | `trash-can-4` | Lid tilted open, upright body |
+
+## Adventurer figures — 0129–0132
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0129 | `figure-sword-shield` | Stick figure in guard with sword and round shield |
+| 0130 | `figure-archer` | Stick figure drawing a bow, arrow nocked |
+| 0131 | `figure-running` | Stick figure at a full run |
+| 0132 | `figure-jumping` | Stick figure mid-jump, arms raised |
+
+## Mounts — 0133–0136
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0133 | `mount-horse` | Rider on a walking horse |
+| 0134 | `mount-wolf` | Rider on a wolf |
+| 0135 | `mount-chocobo` | Rider on a chocobo, tail plumes raised |
+| 0136 | `mount-stag` | Rider on an antlered stag |
+
+## Stars — 0137–0144
+
+Solid `0137`–`0140` and outline `0141`–`0144` are the same four shapes, so a filled/unfilled
+rating row pairs by offset four (`0138` filled ↔ `0142` empty).
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0137 | `star-solid-1` | Solid star, softly rounded points |
+| 0138 | `star-solid-2` | Solid star, sharp classic five-point |
+| 0139 | `star-solid-3` | Solid star, heavily rounded blob points |
+| 0140 | `star-solid-4` | Solid star, irregular hand-drawn points |
+| 0141 | `star-outline-1` | Star outline, softly rounded points |
+| 0142 | `star-outline-2` | Star outline, sharp thin five-point |
+| 0143 | `star-outline-3` | Star outline, heavily rounded blob points |
+| 0144 | `star-outline-4` | Star outline, irregular hand-drawn points |
+
+## Magic & consumables — 0145–0148
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0145 | `wand-star` | Magic wand with a star tip and sparkles |
+| 0146 | `wand-orb` | Magic wand with a round orb tip and sparkles |
+| 0147 | `book-open-star` | Open book with a star and sparkles rising |
+| 0148 | `potion-flask` | Round-bottomed potion flask, corked, sparkling |
+
+## Currency — 0149–0152
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0149 | `gem-currency` | Gem/diamond outline with a currency mark inside |
+| 0150 | `coin-currency` | Coin with a currency mark inside |
+| 0151 | `money-bag` | Cinched money bag with a currency mark |
+| 0152 | `coin-stack` | Stack of coins beside a face-on coin |
+
+## Hands — 0153–0159
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0153 | `hand-point-right-1` | Pointing hand, two-band cuff, level index finger |
+| 0154 | `hand-point-right-2` | Pointing hand, long index, diamond-studded cuff |
+| 0155 | `hand-point-right-3` | Pointing hand from an angled sleeve, ringed finger |
+| 0156 | `hand-palm-open` | Open palm facing forward (halt) |
+| 0157 | `hand-palm-up` | Open hand held palm-up, offering |
+| 0158 | `hand-open-spread` | Gloved hand, fingers spread, studded wrist cuff |
+| 0159 | `hand-palm-up-sparkles` | Palm-up hand with sparkles rising (casting) |
+
+## Tomes — 0160–0163
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0160 | `tome-star` | Bound grimoire with a four-point star on the cover |
+| 0161 | `tome-flame` | Bound grimoire with a flame on the cover |
+| 0162 | `tome-gem` | Bound grimoire with a diamond gem on the cover |
+| 0163 | `tome-clasped` | Closed book with a strap clasp, blank cover |
+
+## Weapons — 0164–0167
+
+| ID | Name | Glyph |
+|----|------|-------|
+| 0164 | `sword-broad` | Broadsword, ringed pommel and straight crossguard |
+| 0165 | `dagger` | Short blade with a wrapped grip |
+| 0166 | `axe-battle` | Double-bitted battle axe on a long haft |
+| 0167 | `spear` | Winged spearhead on a bound shaft |
 
 ---
 

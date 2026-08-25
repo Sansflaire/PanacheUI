@@ -47,6 +47,16 @@ jobs:
           Copy-Item "PanacheUI.json"     $dist
           Copy-Item "$bin/SkiaSharp.dll" $dist -ErrorAction SilentlyContinue
 
+          # Bundle the icon set. Without this the zip carries no Icons folder, so on a real
+          # user's machine PanacheIcons.ResolveIconsFolder misses every strategy and all 167
+          # icons degrade to placeholder swatches (the failure PanacheIcons' own docs describe
+          # for 0.81.28.0). Shipping them side-by-side with the DLL makes the assembly-location
+          # strategy hit for any consumer that sets FolderOverride to its own plugin directory.
+          Copy-Item "Icons" $dist -Recurse
+          $iconCount = (Get-ChildItem "$dist/Icons" -Filter *.png).Count
+          if ($iconCount -lt 1) { Write-Error "No icons packaged; the zip would ship placeholder swatches." }
+          Write-Host "Packaged $iconCount icons"
+
           # Bundle libSkiaSharp in the runtimes subfolder so .NET finds it
           $native = "$dist/runtimes/win-x64/native"
           New-Item -ItemType Directory -Force -Path $native | Out-Null
