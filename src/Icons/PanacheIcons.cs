@@ -35,9 +35,56 @@ public static class PanacheIcons
     private static readonly ConcurrentDictionary<int, SKBitmap?> Cache = new();
     private static readonly Lazy<string> ResolvedFolder = new(ResolveIconsFolder);
 
+    /// <summary>
+    /// An explicit icons folder, which wins over every automatic strategy in
+    /// <see cref="ResolveIconsFolder"/> when it is set and exists on disk.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>A shipped plugin should set this.</b> The automatic strategies were written for
+    /// this machine's dev layout and all of them can miss for a plugin a real user installed
+    /// through Dalamud: the well-known <c>devPlugins\PanacheUI\Icons</c> path does not exist on
+    /// their machine, and <c>Assembly.Location</c> is not dependable because Dalamud may
+    /// shadow-copy an assembly to a temp directory that has no <c>Icons</c> beside it. When every
+    /// strategy misses, <see cref="Get"/> returns null and every icon degrades to a placeholder
+    /// swatch — which is exactly what shipped in 0.81.28.0 and earlier.</para>
+    ///
+    /// <para>A consumer knows its own directory for certain
+    /// (<c>PluginInterface.AssemblyLocation.Directory</c>) and should point this at the
+    /// <c>Icons</c> folder it ships there. Ignored if the directory does not exist, so setting it
+    /// unconditionally is safe and still falls back to the dev layout.</para>
+    /// </remarks>
+    public static string? FolderOverride
+    {
+        get => _folderOverride;
+        set
+        {
+            if (string.Equals(_folderOverride, value, StringComparison.OrdinalIgnoreCase)) return;
+            _folderOverride = value;
+
+            // A miss is cached as null, so anything already looked up against the old folder has
+            // to be forgotten or the override would arrive too late to help. Entries are not
+            // disposed: the class contract is that callers never dispose what Get hands back, and
+            // one may still be holding a reference. A handful of small bitmaps become garbage,
+            // which is the right trade for a setter called once at startup.
+            Cache.Clear();
+        }
+    }
+
+    private static string? _folderOverride;
+
     /// <summary>The folder icons are being read from. Exposed for diagnostics — see the
     /// <c>/panacheui icons</c> chat command, which prints this alongside what it found.</summary>
-    public static string IconsFolder => ResolvedFolder.Value;
+    public static string IconsFolder
+    {
+        get
+        {
+            // Checked on every call rather than captured once: a consumer sets this during its
+            // own construction, which may be after something has already asked for an icon.
+            var over = FolderOverride;
+            if (!string.IsNullOrEmpty(over) && Directory.Exists(over)) return over!;
+            return ResolvedFolder.Value;
+        }
+    }
 
     /// <summary>
     /// Returns the cached bitmap for <paramref name="id"/>, decoding it on first request.

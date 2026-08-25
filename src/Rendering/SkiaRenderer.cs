@@ -261,7 +261,26 @@ public class SkiaRenderer : IDisposable
             using var imgPaint = new SKPaint { IsAntialias = true };
             if (s.ImageTint.HasValue)
                 imgPaint.ColorFilter = SKColorFilter.CreateBlendMode((SKColor)s.ImageTint.Value, SKBlendMode.Modulate);
-            canvas.DrawBitmap(s.ImageBitmap, rect, imgPaint);
+
+            // Device pixels, not layout units: the canvas carries the surface's Scale, so a
+            // 30-unit icon covers ~40 real pixels at scale 1.32 and deserves the sharper copy.
+            var m = canvas.TotalMatrix;
+            float dstW = rect.Width  * MathF.Abs(m.ScaleX);
+            float dstH = rect.Height * MathF.Abs(m.ScaleY);
+
+            // The bundled icons are 313px drawn at 11–30, a reduction no texture filter can
+            // survive on its own — see BitmapScaleCache for why this is a cache and not a
+            // sampler flag. Sampling still matters for the final blit and for the enlarging
+            // case the cache deliberately declines to handle.
+            var img = BitmapScaleCache.ForSize(s.ImageBitmap, dstW, dstH);
+            if (img != null)
+            {
+                var sampling = img.Width < dstW || img.Height < dstH
+                    ? new SKSamplingOptions(SKCubicResampler.Mitchell)               // enlarging
+                    : new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None); // 1:1 or trimming
+
+                canvas.DrawImage(img, rect, sampling, imgPaint);
+            }
             canvas.RestoreToCount(imgSave);
         }
 
