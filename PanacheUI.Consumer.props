@@ -27,10 +27,18 @@
   build output.
 
   KNOBS (set any of these BEFORE the Import to override)
-    PanacheUIPath        where to vendor from. Default: devPlugins\PanacheUI\
-    PanacheDeployPath    dev-plugin folder to mirror into. Default: devPlugins\$(AssemblyName)\
-    PanacheIncludeThemes 'true' to also vendor Themes\. Default: false — only set it
-                         if you actually load PanacheUI themes; it is ~770 KB.
+    PanacheUIPath           where to vendor from. Default: devPlugins\PanacheUI\
+    PanacheDeployPath       dev-plugin folder to mirror into. Default: devPlugins\$(AssemblyName)\
+    PanacheIncludeThemes    'true' to also vendor Themes\. Default: false — only set it
+                            if you actually load PanacheUI themes; it is ~770 KB.
+    PanacheIncludeIcons     'false' to skip the ~4.3 MB Icons\ payload. Default: true.
+                            ONLY set this false if the plugin calls neither PUI.Icon NOR
+                            PUI.CloseButton — CloseButton renders icon #0005 internally, so
+                            "I never call PUI.Icon" is not sufficient reason to opt out. Get
+                            this wrong and the UI silently renders grey placeholder boxes.
+    PanacheUIMinimumVersion e.g. '0.1.6'. When set, the build FAILS if the vendored
+                            PanacheUI.dll is older. Set it to the version whose features you
+                            actually use — see CONSUMERS.md "Version pinning".
 -->
 <Project>
 
@@ -38,6 +46,7 @@
     <PanacheUIPath Condition="'$(PanacheUIPath)' == ''">$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\</PanacheUIPath>
     <PanacheDeployPath Condition="'$(PanacheDeployPath)' == ''">$(APPDATA)\XIVLauncher\devPlugins\$(AssemblyName)\</PanacheDeployPath>
     <PanacheIncludeThemes Condition="'$(PanacheIncludeThemes)' == ''">false</PanacheIncludeThemes>
+    <PanacheIncludeIcons Condition="'$(PanacheIncludeIcons)' == ''">true</PanacheIncludeIcons>
   </PropertyGroup>
 
   <!-- Private="false": these are copied explicitly by PanacheVendorPayload below rather
@@ -64,29 +73,50 @@
            Text="PanacheUI not found at '$(PanacheUIPath)'. Clone it to devPlugins\PanacheUI, or in CI extract https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip there. See CONSUMERS.md." />
     <Error Condition="!Exists('$(PanacheUIPath)libSkiaSharp.dll')"
            Text="libSkiaSharp.dll missing from '$(PanacheUIPath)'. PanacheUI v0.1.6+ ships it flat at the zip root; an older zip only has it under runtimes\win-x64\native\." />
-    <Error Condition="!Exists('$(PanacheUIPath)Icons')"
-           Text="Icons folder missing from '$(PanacheUIPath)'. Without it every PUI.Icon renders as a grey placeholder swatch." />
+    <Error Condition="'$(PanacheIncludeIcons)' == 'true' AND !Exists('$(PanacheUIPath)Icons')"
+           Text="Icons folder missing from '$(PanacheUIPath)'. Without it every PUI.Icon and PUI.CloseButton renders as a grey placeholder swatch." />
+  </Target>
+
+  <!-- Version floor. Reads the real assembly version out of the vendored DLL rather than
+       trusting a file name or a hand-maintained note, so "which PanacheUI did this plugin
+       actually build against?" has one answer and it is the binary's own.
+
+       [MSBuild]::VersionGreaterThanOrEquals is used rather than System.Version.CompareTo
+       because the two sides routinely differ in field count — the assembly reports 0.1.6.0
+       and a human writes 0.1.6 — and System.Version treats an absent revision as -1, which
+       makes 0.1.6 compare LESS than 0.1.6.0 and fails the check on an exact match. -->
+  <Target Name="PanacheVersionCheck" BeforeTargets="Build" DependsOnTargets="PanacheVendorCheck"
+          Condition="'$(PanacheUIMinimumVersion)' != ''">
+    <GetAssemblyIdentity AssemblyFiles="$(PanacheUIPath)PanacheUI.dll">
+      <Output TaskParameter="Assemblies" ItemName="_PanacheAssemblyId" />
+    </GetAssemblyIdentity>
+    <PropertyGroup>
+      <PanacheUIResolvedVersion>%(_PanacheAssemblyId.Version)</PanacheUIResolvedVersion>
+    </PropertyGroup>
+    <Error Condition="!$([MSBuild]::VersionGreaterThanOrEquals('$(PanacheUIResolvedVersion)', '$(PanacheUIMinimumVersion)'))"
+           Text="PanacheUI $(PanacheUIResolvedVersion) at '$(PanacheUIPath)' is older than the required $(PanacheUIMinimumVersion). Update it: https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip" />
+    <Message Importance="high" Text="PanacheUI $(PanacheUIResolvedVersion) (minimum $(PanacheUIMinimumVersion)) OK" />
   </Target>
 
   <!-- SkipUnchangedFiles matters here: libSkiaSharp is ~9.6 MB and would otherwise be
        recopied on every incremental build. -->
   <Target Name="PanacheVendorPayload" AfterTargets="Build">
     <ItemGroup>
-      <PanacheVendoredIcon Include="$(PanacheUIPath)Icons\*.png" />
+      <PanacheVendoredIcon Include="$(PanacheUIPath)Icons\*.png" Condition="'$(PanacheIncludeIcons)' == 'true'" />
       <PanacheVendoredTheme Include="$(PanacheUIPath)Themes\**\*" Condition="'$(PanacheIncludeThemes)' == 'true'" />
     </ItemGroup>
 
-    <Error Condition="'@(PanacheVendoredIcon)' == ''"
-           Text="No icons found in '$(PanacheUIPath)Icons'. Every PUI.Icon would render as a placeholder." />
+    <Error Condition="'$(PanacheIncludeIcons)' == 'true' AND '@(PanacheVendoredIcon)' == ''"
+           Text="No icons found in '$(PanacheUIPath)Icons'. Every PUI.Icon and PUI.CloseButton would render as a placeholder." />
 
     <!-- Into the build output, so a CI Package step can take the payload from $(TargetDir). -->
     <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
-    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(TargetDir)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(TargetDir)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeIcons)' == 'true'" />
     <Copy SourceFiles="@(PanacheVendoredTheme)" DestinationFolder="$(TargetDir)Themes\%(RecursiveDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeThemes)' == 'true'" />
 
     <!-- And into the dev-plugin folder, so the loaded plugin matches what users will get. -->
     <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(PanacheDeployPath)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="Exists('$(PanacheDeployPath)')" />
-    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(PanacheDeployPath)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="Exists('$(PanacheDeployPath)')" />
+    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(PanacheDeployPath)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeIcons)' == 'true' AND Exists('$(PanacheDeployPath)')" />
     <Copy SourceFiles="@(PanacheVendoredTheme)" DestinationFolder="$(PanacheDeployPath)Themes\%(RecursiveDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeThemes)' == 'true' AND Exists('$(PanacheDeployPath)')" />
 
     <Message Importance="high" Text="PanacheUI vendored: @(PanacheVendoredLib->Count()) libs, @(PanacheVendoredIcon->Count()) icons -> $(TargetDir)" />
