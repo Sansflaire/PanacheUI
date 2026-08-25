@@ -1,0 +1,95 @@
+<!--
+  PanacheUI consumer payload — import this from a consuming plugin's .csproj:
+
+      <Import Project="$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\PanacheUI.Consumer.props" />
+
+  WHY THIS FILE EXISTS
+
+  PanacheUI is VENDORED, not shared. Dalamud gives every plugin its own
+  PluginLoadContext, and that context resolves managed DLLs only from the plugin's
+  own folder. A user who installs PanacheUI from its pluginmaster gets PanacheUI as
+  a standalone plugin in ITS folder — which does nothing for your plugin's ALC. If
+  your zip does not carry its own copy of PanacheUI.dll, your plugin throws
+  FileNotFoundException on the first PanacheUI type it touches, for every user,
+  while working perfectly on a dev machine that happens to have devPlugins\PanacheUI.
+
+  So every consumer ships its own copy of:
+
+      PanacheUI.dll  SkiaSharp.dll  libSkiaSharp.dll  Icons\*.png   (+ Themes\ if used)
+
+  That is ~10 MB per plugin, almost all of it the native Skia binary, and it is the
+  correct trade: the alternative is asking a non-technical user to install a second
+  plugin in the right order and hope the load order holds.
+
+  This file does the build-time half. The RELEASE half is your CI's Package step —
+  see CONSUMERS.md next to this file for the snippet, and note that copying to
+  $(TargetDir) here is what lets your CI package the payload straight out of the
+  build output.
+
+  KNOBS (set any of these BEFORE the Import to override)
+    PanacheUIPath        where to vendor from. Default: devPlugins\PanacheUI\
+    PanacheDeployPath    dev-plugin folder to mirror into. Default: devPlugins\$(AssemblyName)\
+    PanacheIncludeThemes 'true' to also vendor Themes\. Default: false — only set it
+                         if you actually load PanacheUI themes; it is ~770 KB.
+-->
+<Project>
+
+  <PropertyGroup>
+    <PanacheUIPath Condition="'$(PanacheUIPath)' == ''">$(APPDATA)\XIVLauncher\devPlugins\PanacheUI\</PanacheUIPath>
+    <PanacheDeployPath Condition="'$(PanacheDeployPath)' == ''">$(APPDATA)\XIVLauncher\devPlugins\$(AssemblyName)\</PanacheDeployPath>
+    <PanacheIncludeThemes Condition="'$(PanacheIncludeThemes)' == ''">false</PanacheIncludeThemes>
+  </PropertyGroup>
+
+  <!-- Private="false": these are copied explicitly by PanacheVendorPayload below rather
+       than by the reference-copy machinery, so the dev deploy and the CI payload are
+       driven by exactly one list that is visible in one place. -->
+  <ItemGroup>
+    <Reference Include="PanacheUI" HintPath="$(PanacheUIPath)PanacheUI.dll" Private="false" />
+    <Reference Include="SkiaSharp" HintPath="$(PanacheUIPath)SkiaSharp.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PanacheVendoredLib Include="$(PanacheUIPath)PanacheUI.dll" />
+    <PanacheVendoredLib Include="$(PanacheUIPath)SkiaSharp.dll" />
+    <PanacheVendoredLib Include="$(PanacheUIPath)libSkiaSharp.dll" />
+  </ItemGroup>
+
+  <!-- Fail at BUILD time, not at the user's first click. A missing PanacheUIPath used to
+       surface as CS0246 from the compiler, which at least stopped the build; a missing
+       libSkiaSharp or Icons folder surfaced as nothing at all locally and a broken UI in
+       the wild. See devPlugins/BROKEN.md, "Shipping a data folder that only exists in the
+       dev layout". -->
+  <Target Name="PanacheVendorCheck" BeforeTargets="Build">
+    <Error Condition="!Exists('$(PanacheUIPath)PanacheUI.dll')"
+           Text="PanacheUI not found at '$(PanacheUIPath)'. Clone it to devPlugins\PanacheUI, or in CI extract https://github.com/Sansflaire/PanacheUI/releases/latest/download/PanacheUI.zip there. See CONSUMERS.md." />
+    <Error Condition="!Exists('$(PanacheUIPath)libSkiaSharp.dll')"
+           Text="libSkiaSharp.dll missing from '$(PanacheUIPath)'. PanacheUI v0.1.6+ ships it flat at the zip root; an older zip only has it under runtimes\win-x64\native\." />
+    <Error Condition="!Exists('$(PanacheUIPath)Icons')"
+           Text="Icons folder missing from '$(PanacheUIPath)'. Without it every PUI.Icon renders as a grey placeholder swatch." />
+  </Target>
+
+  <!-- SkipUnchangedFiles matters here: libSkiaSharp is ~9.6 MB and would otherwise be
+       recopied on every incremental build. -->
+  <Target Name="PanacheVendorPayload" AfterTargets="Build">
+    <ItemGroup>
+      <PanacheVendoredIcon Include="$(PanacheUIPath)Icons\*.png" />
+      <PanacheVendoredTheme Include="$(PanacheUIPath)Themes\**\*" Condition="'$(PanacheIncludeThemes)' == 'true'" />
+    </ItemGroup>
+
+    <Error Condition="'@(PanacheVendoredIcon)' == ''"
+           Text="No icons found in '$(PanacheUIPath)Icons'. Every PUI.Icon would render as a placeholder." />
+
+    <!-- Into the build output, so a CI Package step can take the payload from $(TargetDir). -->
+    <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(TargetDir)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="@(PanacheVendoredTheme)" DestinationFolder="$(TargetDir)Themes\%(RecursiveDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeThemes)' == 'true'" />
+
+    <!-- And into the dev-plugin folder, so the loaded plugin matches what users will get. -->
+    <Copy SourceFiles="@(PanacheVendoredLib)" DestinationFolder="$(PanacheDeployPath)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="Exists('$(PanacheDeployPath)')" />
+    <Copy SourceFiles="@(PanacheVendoredIcon)" DestinationFolder="$(PanacheDeployPath)Icons\" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="Exists('$(PanacheDeployPath)')" />
+    <Copy SourceFiles="@(PanacheVendoredTheme)" DestinationFolder="$(PanacheDeployPath)Themes\%(RecursiveDir)" SkipUnchangedFiles="true" OverwriteReadOnlyFiles="true" Condition="'$(PanacheIncludeThemes)' == 'true' AND Exists('$(PanacheDeployPath)')" />
+
+    <Message Importance="high" Text="PanacheUI vendored: @(PanacheVendoredLib->Count()) libs, @(PanacheVendoredIcon->Count()) icons -> $(TargetDir)" />
+  </Target>
+
+</Project>

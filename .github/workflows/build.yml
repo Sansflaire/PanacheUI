@@ -97,6 +97,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path $native | Out-Null
           Copy-Item "$bin/runtimes/win-x64/native/libSkiaSharp.dll" $native
 
+          # ...and ALSO flat at the root, so extracting this zip reproduces the dev-folder
+          # layout exactly. Consumers vendor PanacheUI by copying "$(PanacheUIPath)libSkiaSharp.dll"
+          # — a flat path, because that is what devPlugins\PanacheUI looks like. A CI that
+          # extracted this zip to stand in for the dev folder got a tree WITHOUT the flat copy
+          # and failed on a dependency that is plainly present in the archive. The zip is a
+          # consumer payload, not just an installable plugin; it has to match.
+          Copy-Item "$bin/libSkiaSharp.dll" $dist
+
+          # The consumer import file, shipped so vendoring is a one-line Import for the
+          # plugins that depend on this framework. See CONSUMERS.md.
+          Copy-Item "$bin/PanacheUI.Consumer.props" $dist
+
           Compress-Archive -Path "$dist/*" -DestinationPath PanacheUI.zip -Force
         shell: pwsh
 
@@ -111,7 +123,16 @@ jobs:
           try {
             $names = $zip.Entries | ForEach-Object { $_.FullName }
 
-            foreach ($required in @("PanacheUI.dll", "PanacheUI.json", "runtimes/win-x64/native/libSkiaSharp.dll")) {
+            # "libSkiaSharp.dll" flat AND under runtimes/ is deliberate — see the Package
+            # step. The flat copy is what consumers vendor from; the nested one is what
+            # .NET's own native probing expects. Dropping either breaks a different caller.
+            foreach ($required in @(
+              "PanacheUI.dll",
+              "PanacheUI.json",
+              "SkiaSharp.dll",
+              "libSkiaSharp.dll",
+              "runtimes/win-x64/native/libSkiaSharp.dll",
+              "PanacheUI.Consumer.props")) {
               if ($names -notcontains $required) { Write-Error "Zip is missing $required" }
             }
 
