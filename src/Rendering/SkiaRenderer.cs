@@ -255,34 +255,7 @@ public class SkiaRenderer : IDisposable
 
         // ── 3. Image bitmap ───────────────────────────────────────────────────
         if (selfVisible && s.ImageBitmap != null)
-        {
-            int imgSave = canvas.Save();
-            ClipToShape(canvas, rect, s);
-            using var imgPaint = new SKPaint { IsAntialias = true };
-            if (s.ImageTint.HasValue)
-                imgPaint.ColorFilter = SKColorFilter.CreateBlendMode((SKColor)s.ImageTint.Value, SKBlendMode.Modulate);
-
-            // Device pixels, not layout units: the canvas carries the surface's Scale, so a
-            // 30-unit icon covers ~40 real pixels at scale 1.32 and deserves the sharper copy.
-            var m = canvas.TotalMatrix;
-            float dstW = rect.Width  * MathF.Abs(m.ScaleX);
-            float dstH = rect.Height * MathF.Abs(m.ScaleY);
-
-            // The bundled icons are 313px drawn at 11–30, a reduction no texture filter can
-            // survive on its own — see BitmapScaleCache for why this is a cache and not a
-            // sampler flag. Sampling still matters for the final blit and for the enlarging
-            // case the cache deliberately declines to handle.
-            var img = BitmapScaleCache.ForSize(s.ImageBitmap, dstW, dstH);
-            if (img != null)
-            {
-                var sampling = img.Width < dstW || img.Height < dstH
-                    ? new SKSamplingOptions(SKCubicResampler.Mitchell)               // enlarging
-                    : new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None); // 1:1 or trimming
-
-                canvas.DrawImage(img, rect, sampling, imgPaint);
-            }
-            canvas.RestoreToCount(imgSave);
-        }
+            DrawImageBitmap(canvas, s, rect);
 
         // ── 4. Border ─────────────────────────────────────────────────────────
         // HoverBorderColor still needs a non-zero BorderWidth to paint — the hover style
@@ -492,6 +465,91 @@ public class SkiaRenderer : IDisposable
     private void ReturnZSlice(int count) => _zSortUsed -= count;
 
     // ── Shape helpers ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Paint <see cref="Style.ImageBitmap"/> into <paramref name="rect"/>, on whole device
+    /// pixels wherever that is possible.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Landing on whole pixels is most of the image quality here.</b>
+    /// <see cref="BitmapScaleCache"/> reduces a 313px icon to the size it will occupy, but that
+    /// work is thrown away if the destination is fractional: a 30-unit icon at surface scale 1.32
+    /// covers 39.6 device pixels, so Skia resamples the carefully reduced bitmap a second time,
+    /// across a half-pixel offset, and the result goes soft and grey. Some icons were fractional
+    /// even at scale 1.0 — a five-pip meter centred in a 46px row sits at y = 17.5.</para>
+    ///
+    /// <para>So when the matrix is a plain axis-aligned scale-and-translate — which is every
+    /// normal case, the surface scale and nothing else — the destination is rounded to integer
+    /// device pixels, the cache is asked for exactly that many pixels, and the draw happens with
+    /// the matrix reset so it is a true 1:1 blit. The icon can shift by up to half a pixel from
+    /// where layout put it; that is invisible, and the sharpness it buys is not.</para>
+    ///
+    /// <para>Rotation, skew or perspective (a <see cref="NodeEffect"/> that spins something) fall
+    /// back to the ordinary scaled draw, where snapping is meaningless.</para>
+    /// </remarks>
+    private static void DrawImageBitmap(SKCanvas canvas, Style s, SKRect rect)
+    {
+        var bmp = s.ImageBitmap!;
+
+        using var imgPaint = new SKPaint { IsAntialias = true };
+        if (s.ImageTint.HasValue)
+            imgPaint.ColorFilter = SKColorFilter.CreateBlendMode((SKColor)s.ImageTint.Value, SKBlendMode.Modulate);
+
+        var m = canvas.TotalMatrix;
+
+        // Pure scale + translate, no flip. Persp2 is the homogeneous w and is 1 for an affine
+        // matrix; the other two perspective terms must be zero.
+        bool axisAligned = m.SkewX == 0f && m.SkewY == 0f
+                        && m.Persp0 == 0f && m.Persp1 == 0f && m.Persp2 == 1f
+                        && m.ScaleX > 0f && m.ScaleY > 0f;
+
+        // A rounded image is clipped to its own shape, and that clip is built from the unrounded
+        // rect — snapping the draw underneath it would shave a hairline off the edge. Square
+        // images (every bundled icon) need no clip at all: the bitmap exactly fills the node.
+        bool canSnap = axisAligned && !s.HasAnyRadius;
+
+        if (canSnap)
+        {
+            float dl = rect.Left * m.ScaleX + m.TransX;
+            float dt = rect.Top  * m.ScaleY + m.TransY;
+
+            int ix = (int)MathF.Round(dl);
+            int iy = (int)MathF.Round(dt);
+            int iw = Math.Max(1, (int)MathF.Round(rect.Width  * m.ScaleX));
+            int ih = Math.Max(1, (int)MathF.Round(rect.Height * m.ScaleY));
+
+            var snapImg = BitmapScaleCache.ForSize(bmp, iw, ih);
+            if (snapImg == null) return;
+
+            int save = canvas.Save();
+            canvas.ResetMatrix();   // clips are held in device space, so this does not move them
+            canvas.DrawImage(snapImg, SKRect.Create(ix, iy, iw, ih),
+                             SamplingFor(snapImg, iw, ih), imgPaint);
+            canvas.RestoreToCount(save);
+            return;
+        }
+
+        int imgSave = canvas.Save();
+        ClipToShape(canvas, rect, s);
+
+        float dstW = rect.Width  * MathF.Abs(m.ScaleX);
+        float dstH = rect.Height * MathF.Abs(m.ScaleY);
+
+        var img = BitmapScaleCache.ForSize(bmp, dstW, dstH);
+        if (img != null)
+            canvas.DrawImage(img, rect, SamplingFor(img, dstW, dstH), imgPaint);
+
+        canvas.RestoreToCount(imgSave);
+    }
+
+    /// <summary>
+    /// Cubic when the image is being enlarged (the cache declines to pre-scale upward, and there
+    /// is no detail to lose), linear when it is 1:1 or trimming a rounding remainder.
+    /// </summary>
+    private static SKSamplingOptions SamplingFor(SKImage img, float dstW, float dstH) =>
+        img.Width < dstW || img.Height < dstH
+            ? new SKSamplingOptions(SKCubicResampler.Mitchell)
+            : new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None);
 
     private static void DrawShape(SKCanvas canvas, SKRect rect, Style s, SKPaint paint)
     {
