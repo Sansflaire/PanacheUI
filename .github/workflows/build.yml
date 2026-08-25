@@ -80,6 +80,18 @@ jobs:
           if ($iconCount -lt 1) { Write-Error "No icons packaged; the zip would ship placeholder swatches." }
           Write-Host "Packaged $iconCount icons"
 
+          # Same story as Icons: ThemeLoader.ResolveThemesFolder looks for a Themes folder
+          # beside the assembly, and Reload() registers zero external themes and returns
+          # silently when it isn't there. Every release through v0.1.4 shipped without it,
+          # so installed users saw only the code-level built-ins and none of the bundled
+          # themes. preview.png / rules_report.txt are ignored by the loader but ship
+          # anyway — the README the plugin writes tells users they're there for reference,
+          # and filtering the copy is one more chance to drop a file the loader wanted.
+          Copy-Item "$bin/Themes" $dist -Recurse
+          $themeCount = (Get-ChildItem "$dist/Themes" -Recurse -Filter theme.json).Count
+          if ($themeCount -lt 1) { Write-Error "No themes packaged; installed users would get built-ins only." }
+          Write-Host "Packaged $themeCount themes"
+
           # Bundle libSkiaSharp in the runtimes subfolder so .NET finds it
           $native = "$dist/runtimes/win-x64/native"
           New-Item -ItemType Directory -Force -Path $native | Out-Null
@@ -106,6 +118,9 @@ jobs:
             $icons = @($names | Where-Object { $_ -like "Icons/*.png" })
             if ($icons.Count -lt 1) { Write-Error "Zip contains no Icons/*.png - icons would render as placeholder swatches." }
 
+            $themes = @($names | Where-Object { $_ -like "Themes/*/theme.json" })
+            if ($themes.Count -lt 1) { Write-Error "Zip contains no Themes/*/theme.json - installed users would get built-ins only." }
+
             $entry  = $zip.Entries | Where-Object { $_.FullName -eq "PanacheUI.json" }
             $reader = New-Object System.IO.StreamReader($entry.Open())
             $bundled = $reader.ReadToEnd() | ConvertFrom-Json
@@ -114,7 +129,7 @@ jobs:
               Write-Error "Zip manifest AssemblyVersion is '$($bundled.AssemblyVersion)', expected '${{ steps.version.outputs.VERSION }}'"
             }
 
-            Write-Host "Artifact OK - $($icons.Count) icons, manifest AssemblyVersion=$($bundled.AssemblyVersion)"
+            Write-Host "Artifact OK - $($icons.Count) icons, $($themes.Count) themes, manifest AssemblyVersion=$($bundled.AssemblyVersion)"
           } finally {
             $zip.Dispose()
           }
