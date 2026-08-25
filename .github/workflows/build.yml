@@ -39,20 +39,43 @@ jobs:
 
       - name: Package
         run: |
-          $bin = "src/bin/x64/Release"
+          $ErrorActionPreference = "Stop"
+
+          # src/PanacheUI.csproj sets <OutDir>../</OutDir> so a local build drops straight
+          # into the repo root, which IS the folder Dalamud loads the dev plugin from. CI
+          # gets the same layout, so the build output is the repo root — NOT src/bin/x64/
+          # Release. That desync silently red-lined every release from 08a9a92 onward;
+          # read the "$bin path desynced from csproj OutDir" entry in devPlugins/BROKEN.md
+          # before changing either side.
+          $bin  = "."
           $dist = "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
+          # Fail loudly and specifically if OutDir ever moves again, instead of leaving a
+          # bare "cannot find path" for the next person to reverse-engineer.
+          if (-not (Test-Path "$bin/PanacheUI.dll")) {
+            Write-Error "PanacheUI.dll not found in '$bin'. <OutDir> in src/PanacheUI.csproj and `$bin here must agree."
+          }
+
           Copy-Item "$bin/PanacheUI.dll" $dist
-          Copy-Item "PanacheUI.json"     $dist
           Copy-Item "$bin/SkiaSharp.dll" $dist -ErrorAction SilentlyContinue
+
+          # Bundle the manifest with the version injected rather than copied verbatim.
+          # A hand-maintained AssemblyVersion in the source manifest drifts from <Version>
+          # in the csproj the first time someone bumps one and not the other, and Dalamud
+          # API 15 hard-rejects the install when the zip's manifest version is wrong.
+          # See devPlugins/BROKEN.md, "Bundled <InternalName>.json missing AssemblyVersion".
+          $version  = "${{ steps.version.outputs.VERSION }}"
+          $manifest = Get-Content "PanacheUI.json" -Raw | ConvertFrom-Json
+          $manifest.AssemblyVersion = $version
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content "$dist/PanacheUI.json" -Encoding utf8
+          Write-Host "Bundled manifest AssemblyVersion=$version"
 
           # Bundle the icon set. Without this the zip carries no Icons folder, so on a real
           # user's machine PanacheIcons.ResolveIconsFolder misses every strategy and all 167
           # icons degrade to placeholder swatches (the failure PanacheIcons' own docs describe
-          # for 0.81.28.0). Shipping them side-by-side with the DLL makes the assembly-location
-          # strategy hit for any consumer that sets FolderOverride to its own plugin directory.
-          Copy-Item "Icons" $dist -Recurse
+          # for 0.81.28.0). Every release through v0.1.3 shipped exactly that way.
+          Copy-Item "$bin/Icons" $dist -Recurse
           $iconCount = (Get-ChildItem "$dist/Icons" -Filter *.png).Count
           if ($iconCount -lt 1) { Write-Error "No icons packaged; the zip would ship placeholder swatches." }
           Write-Host "Packaged $iconCount icons"
@@ -63,6 +86,38 @@ jobs:
           Copy-Item "$bin/runtimes/win-x64/native/libSkiaSharp.dll" $native
 
           Compress-Archive -Path "$dist/*" -DestinationPath PanacheUI.zip -Force
+        shell: pwsh
+
+      # Assert against the ACTUAL zip, not the dist folder that produced it. A green build
+      # has never been evidence that the artifact is installable — that is the standing
+      # lesson at the bottom of devPlugins/BROKEN.md.
+      - name: Verify artifact
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "PanacheUI.zip"))
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+
+            foreach ($required in @("PanacheUI.dll", "PanacheUI.json", "runtimes/win-x64/native/libSkiaSharp.dll")) {
+              if ($names -notcontains $required) { Write-Error "Zip is missing $required" }
+            }
+
+            $icons = @($names | Where-Object { $_ -like "Icons/*.png" })
+            if ($icons.Count -lt 1) { Write-Error "Zip contains no Icons/*.png - icons would render as placeholder swatches." }
+
+            $entry  = $zip.Entries | Where-Object { $_.FullName -eq "PanacheUI.json" }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            $bundled = $reader.ReadToEnd() | ConvertFrom-Json
+            $reader.Close()
+            if ($bundled.AssemblyVersion -ne "${{ steps.version.outputs.VERSION }}") {
+              Write-Error "Zip manifest AssemblyVersion is '$($bundled.AssemblyVersion)', expected '${{ steps.version.outputs.VERSION }}'"
+            }
+
+            Write-Host "Artifact OK - $($icons.Count) icons, manifest AssemblyVersion=$($bundled.AssemblyVersion)"
+          } finally {
+            $zip.Dispose()
+          }
         shell: pwsh
 
       - name: Upload artifact
