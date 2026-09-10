@@ -284,7 +284,7 @@ public sealed class DemoWindow : IDisposable
     }
 
     // ── Right-click demo ─────────────────────────────────────────────────────
-    // Three examples of what OnRightClick enables, matching Trist's request exactly:
+    // Three examples of what OnRightClick enables, matching Sansflaire's request exactly:
     //   1. right-click opens a context menu       → the card's own right-click
     //   2. right-click locks/unlocks a window      → the lock pill
     //   3. right-click cycles through colors       → the color pill
